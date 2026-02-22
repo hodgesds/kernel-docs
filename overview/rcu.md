@@ -1,4 +1,4 @@
-# Linux Kernel RCU (Read-Copy-Update) Deep Dive
+# Linux Kernel RCU (Read-Copy-Update) Overview
 
 ## Table of Contents
 1. [Introduction](#introduction)
