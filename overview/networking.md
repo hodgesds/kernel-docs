@@ -154,6 +154,7 @@ typedef enum {
     SS_CONNECTED,            /* Connected to socket */
     SS_DISCONNECTING         /* In process of disconnecting */
 } socket_state;
+```
 
 The sock structure (commonly called "sk") is the protocol-independent internal
 representation of a socket within the kernel. Unlike struct socket which is
