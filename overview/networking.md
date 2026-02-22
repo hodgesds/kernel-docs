@@ -194,7 +194,7 @@ struct sock {
 
     /* ... many more fields ... */
 };
-
+```
 The sock_common structure contains the fields shared by all socket types and is
 embedded at the beginning of struct sock. It holds fundamental connection
 information including address family, connection state, local and remote
