@@ -1,4 +1,4 @@
-# Linux Kernel Memory Management Deep Dive
+# Linux Kernel Memory Management Overview
 
 A comprehensive guide to Linux kernel memory management internals, covering the
 full stack from physical page allocation through virtual memory translation.
