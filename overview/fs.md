@@ -1,4 +1,4 @@
-# Linux VFS (Virtual File System) Deep Dive
+# Linux VFS (Virtual File System) Overview
 
 This document provides an in-depth exploration of the Linux Virtual File System
 layer, covering the core data structures, caching mechanisms, and I/O paths
