@@ -1,4 +1,4 @@
-# Linux Kernel Scheduler Internals: Comprehensive Guide
+# Linux Kernel Scheduler Overview
 
 This document provides an in-depth overview of the Linux kernel scheduler
 internals, covering task wakeup mechanisms, inter-processor interrupts, IRQ
