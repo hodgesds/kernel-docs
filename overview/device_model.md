@@ -868,7 +868,7 @@ struct reset_control *devm_reset_control_get(struct device *dev,
 │                                      │                      │
 │                                      ▼                      │
 │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐        │
-│  │  devres 1   │──▶│  devres 2   │──▶│  devres 3   │        │
+│  │  devres 1   │─▶│  devres 2   │─▶│  devres 3   │        │
 │  │  (memory)   │   │  (ioremap)  │   │    (irq)    │        │
 │  │  release()  │   │  release()  │   │  release()  │        │
 │  └─────────────┘   └─────────────┘   └─────────────┘        │
