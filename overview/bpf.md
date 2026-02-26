@@ -1081,6 +1081,365 @@ int tc_classify(struct __sk_buff *skb)
 
 ---
 
+## Internal Data Structures
+
+### struct bpf_map (include/linux/bpf.h)
+
+Base map structure. Every map type embeds this as its first member.
+
+```c
+struct bpf_map {
+    const struct bpf_map_ops *ops;     /* vtable: lookup, update, delete, etc. */
+    struct bpf_map *inner_map_meta;    /* for map-in-map: template of inner map */
+    enum bpf_map_type map_type;
+    u32 key_size;
+    u32 value_size;
+    u32 max_entries;
+    u64 map_extra;     /* per-type extra flags (e.g., bloom filter hash count) */
+    u32 map_flags;     /* BPF_F_NO_PREALLOC, BPF_F_RDONLY, etc. */
+    u32 id;            /* globally unique map ID from map_idr */
+    struct btf_record *record;  /* embedded special fields (timers, kptrs, etc.) */
+    int numa_node;
+    u32 btf_key_type_id;
+    u32 btf_value_type_id;
+    struct btf *btf;
+    char name[BPF_OBJ_NAME_LEN];
+    struct mutex freeze_mutex;  /* serializes BPF_MAP_FREEZE */
+    atomic64_t refcnt;          /* kernel reference count */
+    atomic64_t usercnt;         /* userspace FD reference count */
+    atomic64_t writecnt;        /* concurrent write tracking */
+    bool frozen;                /* write-protected after freeze */
+    s64 __percpu *elem_count;   /* per-CPU element count for quota */
+};
+```
+
+### struct bpf_map_ops (include/linux/bpf.h)
+
+Map type vtable. Key callbacks:
+
+```c
+struct bpf_map_ops {
+    struct bpf_map *(*map_alloc)(union bpf_attr *attr);
+    void (*map_free)(struct bpf_map *);
+
+    /* callable from both userspace and BPF programs */
+    void *(*map_lookup_elem)(struct bpf_map *, void *key);
+    long (*map_update_elem)(struct bpf_map *, void *key, void *value, u64 flags);
+    long (*map_delete_elem)(struct bpf_map *, void *key);
+    int  (*map_get_next_key)(struct bpf_map *, void *key, void *next_key);
+
+    /* queue/stack */
+    long (*map_push_elem)(struct bpf_map *, void *value, u64 flags);
+    long (*map_pop_elem)(struct bpf_map *, void *value);
+    long (*map_peek_elem)(struct bpf_map *, void *value);
+
+    /* per-CPU lookup */
+    void *(*map_lookup_percpu_elem)(struct bpf_map *, void *key, u32 cpu);
+
+    /* batch operations */
+    int  (*map_lookup_batch)(...);
+    int  (*map_update_batch)(...);
+    int  (*map_delete_batch)(...);
+
+    /* JIT optimization */
+    int  (*map_gen_lookup)(...);  /* generates inline lookup code */
+
+    /* mmap / poll */
+    int  (*map_mmap)(...);
+    __poll_t (*map_poll)(...);
+};
+```
+
+### struct bpf_link (include/linux/bpf.h)
+
+The modern attachment mechanism (replaces legacy `BPF_PROG_ATTACH`):
+
+```c
+struct bpf_link {
+    atomic64_t refcnt;
+    u32 id;                          /* unique ID from link_idr */
+    enum bpf_link_type type;
+    const struct bpf_link_ops *ops;  /* release, detach, update_prog, fill_link_info */
+    struct bpf_prog *prog;
+    bool sleepable;
+};
+```
+
+Specialized link types embed `bpf_link` as first member:
+- `bpf_tramp_link` — fentry/fexit/kprobe attachments
+- `bpf_tracing_link` — `BPF_PROG_TYPE_TRACING`
+- `bpf_raw_tp_link` — raw tracepoints
+- `bpf_struct_ops_link` — struct_ops
+- `bpf_iter_link` — BPF iterators
+
+### struct bpf_reg_state (include/linux/bpf_verifier.h)
+
+Per-register state tracked by the verifier:
+
+```c
+struct bpf_reg_state {
+    enum bpf_reg_type type;   /* SCALAR_VALUE, PTR_TO_MAP_VALUE, PTR_TO_BTF_ID, etc. */
+    s32 off;                  /* fixed offset from pointed-to object */
+
+    union {                   /* type-specific data */
+        struct { struct bpf_map *map_ptr; u32 map_uid; };
+        struct { struct btf *btf; u32 btf_id; };
+        struct { u32 mem_size; u32 dynptr_id; };
+        u32 subprogno;
+    };
+
+    struct tnum var_off;       /* tristate number: known and unknown bits */
+    s64 smin_value, smax_value;   /* signed 64-bit range */
+    u64 umin_value, umax_value;   /* unsigned 64-bit range */
+    s32 s32_min_value, s32_max_value; /* 32-bit sub-range tracking */
+    u32 u32_min_value, u32_max_value;
+
+    u32 id;           /* links registers sharing the same identity */
+    u32 ref_obj_id;   /* tracks which acquire kfunc owns this reference */
+    struct bpf_reg_state *parent;  /* for liveness back-propagation */
+    enum bpf_reg_liveness live;    /* REG_LIVE_NONE/READ/WRITTEN/DONE */
+    bool precise;     /* whether bounds matter for safety */
+};
+```
+
+### struct bpf_verifier_env (include/linux/bpf_verifier.h)
+
+Master context for one verification run, allocated per `bpf_check()` call:
+
+```c
+struct bpf_verifier_env {
+    u32 insn_idx;                /* current instruction */
+    struct bpf_prog *prog;
+    const struct bpf_verifier_ops *ops;
+    struct bpf_verifier_stack_elem *head;  /* DFS stack of states */
+    struct bpf_verifier_state *cur_state;
+    struct list_head *explored_states;     /* pruning cache */
+    struct bpf_map *used_maps[MAX_USED_MAPS];   /* up to 64 maps */
+    u32 used_map_cnt;
+    u32 id_gen;                  /* monotonic ID for register identity */
+    bool allow_ptr_leaks;        /* privileged mode */
+    bool bpf_capable;
+    struct bpf_insn_aux_data *insn_aux_data;
+    struct bpf_verifier_log log;
+    struct bpf_subprog_info subprog_info[BPF_MAX_SUBPROGS + 2];
+    u32 total_states;
+};
+```
+
+---
+
+## BPF Syscall Commands
+
+The `bpf(2)` syscall is implemented in `kernel/bpf/syscall.c` as
+`SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)`.
+All commands dispatch through `__sys_bpf()`:
+
+| Command | Purpose |
+|---------|---------|
+| `BPF_MAP_CREATE` | Allocate a map, return fd |
+| `BPF_MAP_LOOKUP_ELEM` | Copy value to userspace |
+| `BPF_MAP_UPDATE_ELEM` | Insert or update key/value |
+| `BPF_MAP_DELETE_ELEM` | Delete by key |
+| `BPF_MAP_GET_NEXT_KEY` | Iterate keys |
+| `BPF_MAP_FREEZE` | Make map read-only |
+| `BPF_PROG_LOAD` | Verify and load, return fd |
+| `BPF_OBJ_PIN` | Pin object to bpffs path |
+| `BPF_OBJ_GET` | Open pinned object |
+| `BPF_PROG_ATTACH` | Legacy cgroup attachment |
+| `BPF_PROG_DETACH` | Legacy cgroup detach |
+| `BPF_PROG_TEST_RUN` | Test-run a program |
+| `BPF_LINK_CREATE` | Modern attach, return link fd |
+| `BPF_LINK_UPDATE` | Swap program in link atomically |
+| `BPF_LINK_DETACH` | Detach without destroying link |
+| `BPF_BTF_LOAD` | Load a BTF blob, return fd |
+| `BPF_ITER_CREATE` | Open an iterator as seq_file fd |
+| `BPF_TOKEN_CREATE` | Delegate BPF privileges |
+
+---
+
+## Kfuncs
+
+Kfuncs are regular kernel C functions exposed to BPF programs through
+BTF-based discovery, replacing the `bpf_func_proto` helper system for new
+functionality.
+
+### The `__bpf_kfunc` Annotation (include/linux/btf.h)
+
+```c
+#define __bpf_kfunc __used __retain noinline
+```
+
+`__used` prevents compiler elimination. `__retain` prevents LTO discarding.
+`noinline` preserves the symbol for BTF discovery.
+
+### Kfunc Flags
+
+```c
+#define KF_ACQUIRE       (1 << 0)  /* returns a reference that must be released */
+#define KF_RELEASE       (1 << 1)  /* releases the reference passed as arg */
+#define KF_RET_NULL      (1 << 2)  /* return may be NULL; verifier enforces check */
+#define KF_TRUSTED_ARGS  (1 << 4)  /* args must be trusted pointers or scalars */
+#define KF_SLEEPABLE     (1 << 5)  /* may sleep */
+#define KF_DESTRUCTIVE   (1 << 6)  /* dangerous; requires CAP_SYS_BOOT */
+#define KF_RCU           (1 << 7)  /* accepts RCU-protected pointers */
+#define KF_ITER_NEW      (1 << 8)  /* iterator constructor */
+#define KF_ITER_NEXT     (1 << 9)  /* iterator advance */
+#define KF_ITER_DESTROY  (1 << 10) /* iterator destructor */
+```
+
+### Registration
+
+```c
+struct btf_kfunc_id_set {
+    struct module *owner;
+    struct btf_id_set8 *set;   /* sorted BTF IDs + flags */
+};
+```
+
+Subsystems register kfuncs with `register_btf_kfunc_id_set(prog_type, &kset)`.
+The `BTF_KFUNCS_START` / `BTF_ID_FLAGS` / `BTF_KFUNCS_END` macros
+(`include/linux/btf_ids.h`) generate ELF `.BTF_ids` sections resolved at build
+time by the `resolve_btfids` tool.
+
+When the verifier encounters `BPF_CALL` with `src_reg == BPF_PSEUDO_KFUNC_CALL`,
+it uses the BTF ID in the `imm` field to look up the function in registered
+`btf_id_set8` tables.
+
+---
+
+## struct_ops
+
+BPF struct_ops lets a BPF program implement a kernel interface (a struct of
+function pointers) — e.g., `struct tcp_congestion_ops` or `struct sched_ext_ops`.
+
+### How It Works
+
+1. A kernel subsystem registers a `struct bpf_struct_ops` describing the
+   target ops struct, providing `reg()`/`unreg()` callbacks to activate/
+   deactivate the implementation.
+
+2. Userspace creates a `BPF_MAP_TYPE_STRUCT_OPS` map naming the target via
+   `btf_vmlinux_value_type_id`.
+
+3. `BPF_MAP_UPDATE_ELEM` writes BPF program FDs into function-pointer slots.
+   Each slot gets a JIT-compiled trampoline.
+
+4. `BPF_LINK_CREATE` with `BPF_STRUCT_OPS_LINK` activates by calling
+   `st_ops->reg(kdata, link)`.
+
+5. The kernel calls through function pointers in `kvalue`, hitting trampolines
+   that invoke `bpf_prog_run()`.
+
+### BPF Timers
+
+BPF timers are embedded in map values as `struct bpf_timer` (16 bytes).
+Internally backed by `struct bpf_hrtimer` with helpers:
+
+- `bpf_timer_init(timer, map, flags)` — allocate, bind to map, set clock
+- `bpf_timer_set_callback(timer, fn)` — store BPF callback
+- `bpf_timer_start(timer, nsecs, flags)` — arm the hrtimer
+- `bpf_timer_cancel(timer)` — cancel and wait for running callback
+
+When the hrtimer fires, `bpf_timer_cb()` runs the BPF callback in softirq
+context.
+
+### BPF Iterators
+
+BPF iterators walk kernel data structures via `seq_file`. `BPF_LINK_CREATE`
+with `BPF_TRACE_ITER` creates a link; `BPF_ITER_CREATE` opens it as a
+readable fd. Reading the fd invokes the BPF program for each element.
+
+Targets: task, map, prog, link, cgroup, btf, kmem_cache.
+
+Open-coded iterators use `bpf_iter_<type>_new()` / `_next()` / `_destroy()`
+kfunc triplets directly in BPF program loops.
+
+---
+
+## Locking in BPF
+
+| Lock | Type | Protects |
+|------|------|----------|
+| `prog_idr_lock` | spinlock | `prog_idr` (program ID table) |
+| `map_idr_lock` | spinlock | `map_idr` (map ID table) |
+| `link_idr_lock` | spinlock | `link_idr` (link ID table) |
+| `bpf_verifier_lock` | mutex | serializes unprivileged verification |
+| `trampoline_mutex` | mutex | global trampoline hash table |
+| `tr->mutex` | mutex | per-trampoline attachment |
+| `map->freeze_mutex` | mutex | `BPF_MAP_FREEZE` serialization |
+| hash bucket `raw_lock` | raw_spinlock | per-bucket in hash maps |
+| `struct_ops_map->lock` | mutex | struct_ops map updates |
+
+### RCU in BPF
+
+BPF program execution runs under RCU read lock. Map freeing uses RCU:
+when `usercnt` drops to zero, the map is freed after a grace period
+(tasks-trace RCU GP for sleepable programs). Per-CPU `bpf_prog_active`
+counter prevents recursion in perf/kprobe contexts.
+
+### BPF Memory Allocator (kernel/bpf/memalloc.c)
+
+NMI-safe allocator with per-CPU, per-bucket free-lists across 11 size classes
+(16 to 4096 bytes). Uses `irq_work` for async refill from kmalloc.
+Deferred free via RCU ensures no BPF program holds a dangling pointer.
+
+### Ringbuf Internals (kernel/bpf/ringbuf.c)
+
+Data pages are physically allocated once but **mapped twice** in virtual
+address space, creating a virtual double-ring. Records wrapping around the
+physical end appear contiguous, eliminating wrap-around handling. Consumer
+and producer positions are in separate pages with controlled read-only
+mappings to prevent userspace tampering.
+
+---
+
+## Source Files
+
+```
+kernel/bpf/syscall.c       - bpf(2) syscall, all command handlers
+kernel/bpf/verifier.c      - verifier: bpf_check() (~23,000 lines)
+kernel/bpf/core.c           - interpreter, prog alloc/free, JIT selection
+kernel/bpf/btf.c            - BTF parsing, type resolution, kfunc registration
+kernel/bpf/helpers.c         - core helper implementations
+kernel/bpf/trampoline.c     - fentry/fexit/struct_ops trampolines
+kernel/bpf/bpf_struct_ops.c - struct_ops map and link
+kernel/bpf/bpf_iter.c       - iterator framework
+kernel/bpf/memalloc.c        - NMI-safe per-CPU memory allocator
+kernel/bpf/ringbuf.c         - ringbuf map (double-mapped pages)
+kernel/bpf/hashtab.c         - hash/percpu_hash/lru_hash maps
+kernel/bpf/arraymap.c        - array/percpu_array maps
+kernel/bpf/lpm_trie.c        - longest-prefix-match trie
+kernel/bpf/stackmap.c        - stack trace map
+kernel/bpf/devmap.c           - XDP device redirect map
+kernel/bpf/cpumap.c           - XDP CPU redirect map
+kernel/bpf/queue_stack_maps.c - queue/stack maps
+kernel/bpf/bloom_filter.c     - bloom filter map
+kernel/bpf/map_in_map.c       - array_of_maps/hash_of_maps
+kernel/bpf/bpf_local_storage.c - local storage core
+kernel/bpf/bpf_task_storage.c  - per-task storage
+kernel/bpf/bpf_inode_storage.c - per-inode storage
+kernel/bpf/arena.c             - shared memory arena
+kernel/bpf/inode.c             - bpffs (/sys/fs/bpf)
+kernel/bpf/cgroup.c            - cgroup BPF programs
+kernel/bpf/bpf_lsm.c           - BPF LSM hooks
+kernel/bpf/mprog.c              - multi-prog attachment (TC, netfilter)
+kernel/bpf/log.c                - verifier log management
+kernel/bpf/tnum.c               - tristate number arithmetic
+kernel/bpf/token.c              - BPF delegation tokens
+kernel/bpf/offload.c            - hardware offload (SmartNIC)
+
+net/core/filter.c              - network BPF helpers and prog type ops
+arch/x86/net/bpf_jit_comp.c   - x86-64 JIT compiler
+
+include/linux/bpf.h            - bpf_map, bpf_link, bpf_struct_ops, internal API
+include/linux/bpf_verifier.h   - bpf_reg_state, bpf_verifier_env
+include/uapi/linux/bpf.h       - bpf_cmd, bpf_map_type, bpf_prog_type, bpf_attr
+include/linux/btf.h             - BTF API, kfunc macros and flags
+include/linux/btf_ids.h         - BTF_KFUNCS_START/END, BTF_ID_FLAGS macros
+```
+
+---
+
 ## Summary
 
 eBPF provides a powerful, safe, and efficient way to extend the Linux kernel:
@@ -1091,13 +1450,14 @@ eBPF provides a powerful, safe, and efficient way to extend the Linux kernel:
 | Verifier | Safety and termination guarantee |
 | JIT Compiler | Native code performance |
 | Maps | Shared storage between BPF and user space |
-| Helpers | Kernel API access |
+| Helpers | Legacy kernel API access |
+| Kfuncs | Modern BTF-based kernel API access |
 | BTF | Type information for portability |
+| struct_ops | Implement kernel interfaces in BPF |
+| Links | Modern attachment and lifecycle management |
 
 Key use cases:
 - **Networking**: XDP for packet processing, TC for traffic control
 - **Observability**: Tracing, profiling, metrics
 - **Security**: LSM hooks, seccomp
 - **Scheduling**: sched_ext for custom CPU scheduling
-
-eBPF enables kernel-level programmability without kernel module risks.

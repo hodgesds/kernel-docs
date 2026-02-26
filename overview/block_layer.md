@@ -1236,23 +1236,271 @@ struct target_type {
 
 ---
 
-## Summary
+## Bio Splitting
 
-The Linux block layer provides a sophisticated infrastructure for managing
-block devices:
+Bios are split when they exceed device queue limits. The entry point is
+`__bio_split_to_limits()` (`block/blk.h`), which dispatches by operation type
+to `bio_split_rw()`, `bio_split_discard()`, or `bio_split_write_zeroes()`.
 
-| Component | Purpose |
-|-----------|---------|
-| bio | Describes single I/O operation |
-| request | Groups bios for efficiency |
-| blk-mq | Multi-queue for modern devices |
-| I/O scheduler | Optimizes request ordering |
-| gendisk | Represents block device |
-| Device mapper | Virtual device framework |
+`bio_split_rw_at()` (`block/blk-merge.c`) walks the bvec array counting
+physical segments and returns the sector offset where a split must occur.
+Split triggers include:
 
-Key performance features:
-- **Per-CPU queues**: Reduces lock contention
-- **I/O merging**: Combines adjacent requests
-- **Plugging**: Batches submissions
-- **Polling**: Reduces interrupt overhead for NVMe
-- **Multi-queue**: Matches NVMe hardware architecture
+- `lim->max_sectors` — maximum sectors per request
+- `lim->chunk_sectors` — boundary alignment (NVMe namespace, zone granularity)
+- `lim->max_segments` — maximum scatter-gather segments
+- `lim->max_segment_size` — maximum size of a single DMA segment
+- `lim->seg_boundary_mask` — segment crossing restrictions
+
+The actual split uses `bio_submit_split()` (`block/blk-merge.c`):
+
+```c
+split = bio_split(bio, split_sectors, GFP_NOIO, &disk->bio_split);
+split->bi_opf |= REQ_NOMERGE;
+bio_chain(split, bio);       /* parent completes only when both halves finish */
+submit_bio_noacct(bio);      /* re-submit the remainder */
+return split;                /* return the front portion */
+```
+
+---
+
+## Plugging
+
+Plugging batches I/O submissions to reduce per-request overhead and enable
+merging. The plug is stored in `current->plug`.
+
+### struct blk_plug (include/linux/blkdev.h)
+
+```c
+struct blk_plug {
+    struct rq_list mq_list;     /* blk-mq requests pending flush */
+    struct rq_list cached_rqs;  /* pre-allocated requests for reuse */
+    unsigned short nr_ios;      /* hint: how many IOs will be submitted */
+    unsigned short rq_count;    /* current count in mq_list */
+    bool multiple_queues;       /* requests span >1 request_queue */
+    bool has_elevator;          /* any request uses a scheduler */
+    struct list_head cb_list;   /* unplug callbacks */
+};
+```
+
+### Plug Lifecycle
+
+`blk_start_plug()` (`block/blk-core.c`) initializes the plug and assigns it
+to `current->plug`. Nested plugs are silently ignored.
+
+`blk_add_rq_to_plug()` (`block/blk-mq.c`) adds requests to the plug. An
+early flush triggers when:
+- `rq_count >= BLK_MAX_REQUEST_COUNT` (32, or 64 for multi-queue)
+- Last request exceeds `BLK_PLUG_FLUSH_SIZE` (128 KB)
+
+`blk_finish_plug()` (`block/blk-core.c`) flushes the plug via
+`blk_mq_flush_plug_list()`, which dispatches to the hardware queue. When no
+scheduler is involved, it tries `mq_ops->queue_rqs()` for batch submission.
+
+The plug is also flushed implicitly when the task calls `io_schedule()`.
+
+`__submit_bio()` (`block/blk-core.c`) creates an **implicit plug** around
+every `blk_mq_submit_bio()` call, ensuring at minimum a single-request batch.
+
+---
+
+## Tag Allocation
+
+### struct blk_mq_tags (include/linux/blk-mq.h)
+
+```c
+struct blk_mq_tags {
+    unsigned int nr_tags;
+    unsigned int nr_reserved_tags;  /* reserved for flush/internal */
+    unsigned int active_queues;
+
+    struct sbitmap_queue bitmap_tags;    /* normal tag bitmap */
+    struct sbitmap_queue breserved_tags; /* reserved tag bitmap */
+
+    struct request **rqs;        /* tag -> in-flight request */
+    struct request **static_rqs; /* tag -> pre-allocated request */
+    struct list_head page_list;
+
+    spinlock_t lock;
+};
+```
+
+Two sbitmap queues: `bitmap_tags` for normal I/O, `breserved_tags` for flush
+operations. When a scheduler is active, requests come from `hctx->sched_tags`
+first; the hardware driver tag from `hctx->tags` is assigned at dispatch time
+via `blk_mq_get_driver_tag()`.
+
+`blk_mq_get_tag()` (`block/blk-mq-tag.c`) atomically allocates a bit from
+the sbitmap. If no tag is available and `BLK_MQ_REQ_NOWAIT` is not set, it
+calls `blk_mq_run_hw_queue()` to drain completions, then sleeps on the
+sbitmap wait queue via `io_schedule()`.
+
+`blk_mq_put_tag()` clears the bit and wakes waiters.
+
+---
+
+## I/O Accounting
+
+### struct disk_stats (include/linux/part_stat.h)
+
+```c
+struct disk_stats {
+    u64 nsecs[NR_STAT_GROUPS];             /* time spent (ns) per direction */
+    unsigned long sectors[NR_STAT_GROUPS]; /* sectors transferred */
+    unsigned long ios[NR_STAT_GROUPS];     /* completed IOs */
+    unsigned long merges[NR_STAT_GROUPS];  /* merged IOs */
+    unsigned long io_ticks;                /* time device was busy (jiffies) */
+    local_t in_flight[2];                  /* in-flight: [0]=read, [1]=write */
+};
+```
+
+Allocated **per-CPU per block_device** (`bd_stats`). Locking is just
+`preempt_disable()` — no spinlock — because per-CPU data is accessed only
+from the local CPU. `part_stat_read()` sums across all CPUs for display
+(e.g., `/sys/block/sda/stat`).
+
+`blk_account_io_start()` (`block/blk-mq.c`) records `start_time_ns` and
+increments `in_flight`. `blk_account_io_done()` records completion time,
+increments `ios` and `nsecs`, and decrements `in_flight`.
+
+---
+
+## Writeback Throttling (wbt)
+
+wbt is an rq-qos plugin (`block/blk-wbt.c`) that throttles buffered writes
+to prevent them from starving reads.
+
+### rq-qos Framework
+
+rq-qos is a hook chain on `request_queue` (`q->rq_qos`). Each node has a
+`struct rq_qos_ops` vtable with hooks called at key points:
+
+| Hook | Called In | Purpose |
+|------|-----------|---------|
+| `throttle` | `blk_mq_get_new_requests()` | May sleep to throttle bio |
+| `track` | `blk_mq_submit_bio()` | Associate bio flags with request |
+| `issue` | `blk_mq_start_request()` | Request dispatched to hardware |
+| `done` | `__blk_mq_end_request()` | Request completed |
+| `cleanup` | alloc failure path | Release throttle token on error |
+
+Three rq-qos plugins exist:
+- `RQ_QOS_WBT` — writeback throttling (`block/blk-wbt.c`)
+- `RQ_QOS_LATENCY` — I/O latency QoS (`block/blk-iolatency.c`)
+- `RQ_QOS_COST` — iocost (`block/blk-iocost.c`)
+
+### wbt Operation
+
+wbt tracks only buffered writes and discards (not reads or sync writes).
+`wbt_wait()` sleeps if the in-flight count exceeds the current depth limit.
+Limits adapt via a 100ms timer: if latency exceeds `min_lat_nsec`, the depth
+shrinks; if latency is good, it grows. Three wait classes: background writes,
+swap, and discards.
+
+---
+
+## Locking Summary
+
+| Lock | Type | Protects |
+|------|------|----------|
+| `hctx->lock` | spinlock (cacheline-aligned) | `hctx->dispatch` list (failed dispatch retry) |
+| `ctx->lock` | spinlock (cacheline-aligned) | `ctx->rq_lists[]` per-CPU software queues |
+| `tags->lock` | spinlock | `tags->rqs[]` tag-to-request mapping |
+| `q->requeue_lock` | spinlock | `q->requeue_list` |
+| `q->rq_qos_mutex` | mutex | `q->rq_qos` chain add/remove |
+| `q->limits_lock` | mutex | `q->limits` (queue_limits) |
+| `q->sysfs_lock` | mutex | sysfs attribute access |
+| `q->mq_freeze_lock` | mutex | freeze/quiesce ref counting |
+| `q->blkcg_mutex` | mutex | blkcg group list |
+| `flush_queue->mq_flush_lock` | spinlock | flush state machine |
+| `elv_list_lock` | spinlock (global) | registered scheduler types |
+
+The submission path (`blk_mq_submit_bio()`) is **lockless** for the common
+case. Sbitmap uses atomic bit operations. `ctx->lock` is taken only when
+inserting into software queues (scheduler path). `hctx->lock` is taken only
+when adding to `hctx->dispatch` (failed dispatch retry).
+
+---
+
+## Source Files
+
+```
+block/blk-core.c          - submit_bio(), plugging, queue lifecycle
+block/blk-mq.c            - blk_mq_submit_bio(), tag alloc, dispatch, completion
+block/blk-mq-tag.c        - blk_mq_get_tag(), sbitmap tag operations
+block/blk-merge.c          - bio_split_to_limits(), segment merge logic
+block/blk-mq-sched.c      - scheduler integration (bio_merge, dispatch)
+block/elevator.c           - scheduler framework: registration, switching
+block/mq-deadline.c        - mq-deadline scheduler
+block/kyber-iosched.c      - kyber scheduler
+block/bfq-iosched.c        - BFQ scheduler
+block/blk-wbt.c            - writeback throttling
+block/blk-rq-qos.c         - rq-qos framework dispatch
+block/blk-throttle.c       - cgroup blkio throttling
+block/blk-iocost.c         - iocost controller
+block/blk-iolatency.c      - IO latency QoS
+block/blk-flush.c          - flush sequence state machine
+block/blk-stat.c           - request statistics
+block/blk-settings.c       - queue_limits setters
+block/blk-sysfs.c          - queue sysfs attributes
+block/blk-cgroup.c         - blkcg policy framework
+block/genhd.c              - gendisk registration, disk_stats
+block/bdev.c               - block device open/close
+block/bio.c                - bio allocation, bio_split(), bio_chain()
+block/bounce.c             - high-memory page bouncing
+block/fops.c               - block device file operations
+
+drivers/md/dm.c            - DM core: dm_submit_bio(), bio splitting
+drivers/md/dm-table.c      - DM target table management
+drivers/md/dm-ioctl.c      - DM userspace control (/dev/mapper/control)
+drivers/md/dm-linear.c     - linear target
+drivers/md/dm-stripe.c     - striping target
+drivers/md/dm-crypt.c      - encryption target
+drivers/md/dm-thin.c       - thin provisioning target
+drivers/md/dm-verity-target.c - verity target
+drivers/md/dm-mpath.c      - multipath target
+
+include/linux/blkdev.h     - request_queue, blk_plug, queue_limits
+include/linux/blk-mq.h     - blk_mq_hw_ctx, blk_mq_tags, blk_mq_tag_set, blk_mq_ops
+include/linux/blk_types.h  - bio, block_device, blk_opf_t
+include/linux/part_stat.h  - disk_stats, part_stat macros
+```
+
+---
+
+## Complete submit_bio() Call Chain
+
+```
+submit_bio()                         [block/blk-core.c]
+  submit_bio_noacct()
+    blk_partition_remap()            (if partition)
+    blk_throtl_bio()                 (cgroup throttle, may sleep)
+    submit_bio_noacct_nocheck()
+      __submit_bio()
+        blk_start_plug()             (implicit plug)
+        blk_mq_submit_bio()          [block/blk-mq.c]
+          blk_queue_bounce()         (if highmem pages)
+          __bio_split_to_limits()    (split if exceeds limits)
+          bio_integrity_prep()
+          blk_mq_attempt_bio_merge() (try merge with existing)
+          blk_mq_get_new_requests()
+            rq_qos_throttle()        -> wbt_wait() (may sleep)
+            __blk_mq_alloc_requests()
+              blk_mq_get_tag()       (sbitmap atomic alloc)
+          rq_qos_track()
+          blk_mq_bio_to_request()    (populate request from bio)
+          [if plug active]:
+            blk_add_rq_to_plug()
+          [else direct issue]:
+            blk_mq_try_issue_directly()
+              q->mq_ops->queue_rq()  [DRIVER]
+        blk_finish_plug()            (flush plug -> dispatch)
+
+Completion path (interrupt context):
+  blk_mq_complete_request()
+    blk_mq_end_request()
+      blk_account_io_done()          (update disk_stats)
+      rq_qos_done()                  -> wbt_done()
+      rq->end_io()
+      blk_mq_free_request()
+        blk_mq_put_tag()             (sbitmap clear, wake waiters)
+```
