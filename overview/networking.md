@@ -11,6 +11,12 @@
 8. [Netfilter and iptables](#netfilter-and-iptables)
 9. [XDP (eXpress Data Path)](#xdp-express-data-path)
 10. [Traffic Control (tc)](#traffic-control-tc)
+11. [GRO / GSO](#gro--gso)
+12. [Network Namespaces](#network-namespaces)
+13. [Routing / FIB](#routing--fib)
+14. [TCP Congestion Control](#tcp-congestion-control)
+15. [Locking Summary](#locking-summary)
+16. [Source Files Reference](#source-files-reference)
 
 ---
 
@@ -1565,23 +1571,290 @@ int tc_filter(struct __sk_buff *skb)
 
 ---
 
-## Summary
+## GRO / GSO
 
-The Linux networking stack is a sophisticated pipeline optimized for both high
-performance and flexibility:
+### GRO (Generic Receive Offload)
 
-| Layer | Key Structures | Key Functions |
-|-------|---------------|---------------|
-| Socket | socket, sock | socket(), bind(), connect() |
-| Transport | tcp_sock, udp_sock | tcp_v4_rcv(), udp_rcv() |
-| Network | iphdr, rtable | ip_rcv(), ip_output() |
-| Netfilter | nf_hook_ops, nf_conn | nf_hook_slow() |
-| Device | net_device, sk_buff | dev_queue_xmit(), netif_receive_skb() |
-| Driver | napi_struct | napi_poll(), ndo_start_xmit() |
+`napi_gro_receive()` is the primary driver entry point for GRO, defined in `net/core/gro.c:626`.
 
-Key optimization techniques:
-- **NAPI**: Interrupt mitigation through polling
-- **GRO/GSO**: Packet coalescing for fewer stack traversals
-- **XDP**: Early packet processing before sk_buff allocation
-- **Zero-copy**: Direct DMA to/from user buffers (io_uring, AF_XDP)
-- **Multi-queue**: Per-CPU TX/RX queues with RSS/XPS
+**Call flow:**
+1. `napi_gro_receive(napi, skb)` — marks the NAPI ID, resets the GRO offset via `skb_gro_reset_offset()`
+2. Calls `dev_gro_receive(napi, skb)` — the core coalescing engine
+3. Calls `napi_skb_finish(napi, skb, ret)` — dispatches based on the result
+
+**`dev_gro_receive()` coalescing logic** (`net/core/gro.c:464`):
+- Hashes the skb into one of `GRO_HASH_BUCKETS` buckets in `napi->gro_hash[]`
+- Calls `gro_list_prepare()` to mark existing candidates in the bucket
+- Iterates `net_hotdata.offload_base` to find a `packet_offload` with a `gro_receive` callback matching `skb->protocol`
+- Invokes `ptype->callbacks.gro_receive(&gro_list->list, skb)` (typically `inet_gro_receive` or `ipv6_gro_receive`)
+- Protocol layers set `NAPI_GRO_CB(skb)->same_flow` if the skb matches an existing chain; `flush` if it cannot be merged
+- If `same_flow`: skb is appended to existing chain, returning `GRO_MERGED` or `GRO_MERGED_FREE`
+- If not same flow and not flush: skb added as new chain head, returning `GRO_HELD`
+- If the bucket grows to `MAX_GRO_SKBS` (8), `gro_flush_oldest()` flushes the oldest chain
+
+**`enum gro_result`** (`include/linux/netdevice.h:425`):
+
+| Value | Meaning |
+|---|---|
+| `GRO_MERGED` | skb merged into existing chain; free skb normally |
+| `GRO_MERGED_FREE` | skb merged; protocol layer already freed it |
+| `GRO_HELD` | skb held as new or existing chain head |
+| `GRO_NORMAL` | no GRO applicable; pass to `netif_receive_skb()` |
+| `GRO_CONSUMED` | skb consumed asynchronously (e.g., tunnel) |
+
+### GSO (Generic Segmentation Offload)
+
+GSO metadata lives in `struct skb_shared_info` (`include/linux/skbuff.h:591`):
+
+```c
+struct skb_shared_info {
+    unsigned short  gso_size;   /* segment payload size */
+    unsigned short  gso_segs;   /* number of segments represented */
+    unsigned int    gso_type;   /* bitmask of SKB_GSO_* flags */
+};
+```
+
+**Key GSO type flags** (`include/linux/skbuff.h:658`):
+
+| Flag | Meaning |
+|---|---|
+| `SKB_GSO_TCPV4` | TCP over IPv4 segmentation |
+| `SKB_GSO_TCPV6` | TCP over IPv6 segmentation |
+| `SKB_GSO_UDP_L4` | UDP L4 segmentation |
+| `SKB_GSO_GRE` / `_CSUM` | GRE tunnel (with/without checksum) |
+| `SKB_GSO_UDP_TUNNEL` / `_CSUM` | UDP tunnel offload |
+| `SKB_GSO_PARTIAL` | hardware does partial GSO |
+| `SKB_GSO_SCTP` | SCTP segmentation |
+| `SKB_GSO_ESP` | ESP/IPsec offload |
+| `SKB_GSO_FRAGLIST` | frag-list segmentation |
+
+**Software vs hardware segmentation:**
+- `skb_is_gso(skb)` is true when `skb_shinfo(skb)->gso_size != 0`
+- On TX, `__dev_queue_xmit()` calls `__skb_gso_segment()` (`net/core/gso.c:88`) if the device lacks the required feature
+- `__skb_gso_segment()` calls `skb_mac_gso_segment()` → `ptype->callbacks.gso_segment()`, producing a linked list of wire-sized skbs
+- If the NIC advertises the matching `NETIF_F_*` feature flag (e.g., `NETIF_F_TSO`), the GSO skb goes directly to hardware
+
+---
+
+## Network Namespaces
+
+### `struct net` (`include/net/net_namespace.h:61`)
+
+| Field | Type | Purpose |
+|---|---|---|
+| `passive` | `refcount_t` | controls when the netns is freed |
+| `list` | `struct list_head` | links all namespaces; protected by `net_rwsem` |
+| `dev_base_head` | `struct list_head` | list of all net devices in this ns |
+| `dev_name_head` | `struct hlist_head *` | device lookup by name hash |
+| `dev_index_head` | `struct hlist_head *` | device lookup by ifindex hash |
+| `dev_by_index` | `struct xarray` | xarray for ifindex lookup |
+| `loopback_dev` | `struct net_device *` | the loopback interface |
+| `ipv4` | `struct netns_ipv4` | IPv4 per-ns state (FIB tables, sysctls) |
+| `ipv6` | `struct netns_ipv6` | IPv6 per-ns state |
+| `nf` / `ct` | `struct netns_nf/ct` | Netfilter and conntrack state |
+| `bpf` | `struct netns_bpf` | attached BPF programs |
+| `gen` | `struct net_generic __rcu *` | extensible per-ns private data |
+| `net_cookie` | `u64` | written-once unique identifier |
+
+**`init_net`** (`include/net/net_namespace.h:201`): the initial (root) network namespace, statically allocated.
+
+### Key Accessors
+
+- **`dev_net(dev)`** (`include/linux/netdevice.h:2644`): returns `struct net` owning a device
+- **`sock_net(sk)`** (`include/net/sock.h:653`): returns `struct net` a socket belongs to
+
+### `struct pernet_operations` (`include/net/net_namespace.h:433`)
+
+```c
+struct pernet_operations {
+    struct list_head list;
+    int  (*init)(struct net *net);      /* called when new netns is created */
+    void (*pre_exit)(struct net *net);  /* before exit, RCU still live */
+    void (*exit)(struct net *net);      /* teardown */
+    void (*exit_batch)(struct list_head *net_list); /* batched teardown */
+    unsigned int *id;   /* optional: per-ns generic data slot id */
+    size_t size;        /* size of per-ns private data */
+};
+```
+
+- `register_pernet_subsys(ops)` — core subsystem hooks
+- `register_pernet_device(ops)` — device-level hooks (ordered after subsys at teardown)
+
+---
+
+## Routing / FIB
+
+### `struct fib_table` (`include/net/ip_fib.h:255`)
+
+```c
+struct fib_table {
+    struct hlist_node   tb_hlist;       /* node in net->ipv4.fib_table_hash[] */
+    u32                 tb_id;          /* RT_TABLE_MAIN, RT_TABLE_LOCAL, etc. */
+    int                 tb_num_default; /* number of default routes */
+    struct rcu_head     rcu;
+    unsigned long       *tb_data;       /* points into the LC-trie */
+};
+```
+
+### `fib_lookup()` (`include/net/ip_fib.h:314`)
+
+Without `CONFIG_IP_MULTIPLE_TABLES`: looks up directly in main and local tables via `fib_table_lookup()`.
+
+With `CONFIG_IP_MULTIPLE_TABLES`: if `net->ipv4.fib_has_custom_rules` is set, calls `__fib_lookup()` → `fib_rules_lookup()` to evaluate policy routing rules; each matching rule points to a table searched via `fib_table_lookup()`.
+
+### LC-Trie (`struct key_vector`) (`net/ipv4/fib_trie.c:121`)
+
+```c
+struct key_vector {
+    t_key   key;            /* 32-bit IP prefix key */
+    u8      pos;            /* bit position this node tests */
+    u8      bits;           /* branching factor: 2^bits children; 0 = leaf */
+    u8      slen;           /* suffix length for prefix compression */
+    union {
+        struct hlist_head leaf;                   /* leaf: list of fib_alias */
+        struct key_vector __rcu *tnode[];         /* internal: child array */
+    };
+};
+```
+
+- `IS_LEAF(n)` when `bits == 0`; the `leaf` hlist holds `struct fib_alias` entries containing `struct fib_info`
+- `IS_TNODE(n)` when `bits > 0`; `tnode[]` has `2^bits` child pointers
+- Lookup traverses from root, extracting `bits` bits at position `pos` to index into `tnode[]`
+
+### `struct rtable` / `struct dst_entry`
+
+**`struct dst_entry`** (`include/net/dst.h:26`):
+
+```c
+struct dst_entry {
+    struct net_device  *dev;        /* output interface */
+    struct dst_ops     *ops;        /* vtable: check, destroy, update_pmtu */
+    int  (*input)(struct sk_buff *);    /* e.g., ip_local_deliver or ip_forward */
+    int  (*output)(struct net *, struct sock *, struct sk_buff *);
+    short              obsolete;    /* DST_OBSOLETE_* for cache validation */
+    rcuref_t           __rcuref;
+};
+```
+
+**`struct rtable`** (`include/net/route.h:56`):
+
+```c
+struct rtable {
+    struct dst_entry    dst;            /* must be first */
+    int                 rt_genid;       /* route generation ID */
+    unsigned int        rt_flags;       /* RTF_* flags */
+    __u16               rt_type;        /* RTN_UNICAST, RTN_LOCAL, etc. */
+    __u8                rt_is_input;    /* 1 = input, 0 = output */
+    __u8                rt_uses_gateway;
+    int                 rt_iif;         /* input interface index */
+    __be32              rt_gw4;         /* IPv4 gateway address */
+    u32                 rt_pmtu;        /* path MTU */
+};
+```
+
+### Route Lookup Functions
+
+- **`ip_route_input_slow()`** (`net/ipv4/route.c:2231`): slow-path RX route lookup; calls `fib_lookup()`, builds `rtable`, attaches as `skb_dst()`
+- **`ip_route_output_flow()`** (`net/ipv4/route.c:2896`): TX route lookup; calls `__ip_route_output_key()`, applies xfrm policies
+
+---
+
+## TCP Congestion Control
+
+### `struct tcp_congestion_ops` (`include/net/tcp.h:1164`)
+
+```c
+struct tcp_congestion_ops {
+    /* Required callbacks (fast path) */
+    u32  (*ssthresh)(struct sock *sk);
+    void (*cong_avoid)(struct sock *sk, u32 ack, u32 acked);
+    u32  (*undo_cwnd)(struct sock *sk);
+
+    /* Optional callbacks */
+    void (*set_state)(struct sock *sk, u8 new_state);
+    void (*cwnd_event)(struct sock *sk, enum tcp_ca_event ev);
+    void (*in_ack_event)(struct sock *sk, u32 flags);
+    void (*pkts_acked)(struct sock *sk, const struct ack_sample *sample);
+    void (*cong_control)(struct sock *sk, u32 ack, int flag,
+                         const struct rate_sample *rs);
+    void (*init)(struct sock *sk);
+    void (*release)(struct sock *sk);
+
+    char            name[TCP_CA_NAME_MAX];
+    struct module   *owner;
+    u32             flags;   /* TCP_CONG_NON_RESTRICTED, TCP_CONG_NEEDS_ECN */
+} ____cacheline_aligned_in_smp;
+```
+
+### CUBIC (`net/ipv4/tcp_cubic.c`)
+
+Uses `struct bictcp` as private CA state (in `inet_csk(sk)->icsk_ca_priv`):
+- `cubictcp_cong_avoid()`: calls `bictcp_update()` computing `W_cubic(t) = C*(t-K)^3 + W_max`; HyStart exits slow start early on delay increases
+- `cubictcp_recalc_ssthresh()`: sets `ssthresh = max(W_max * beta_scale, 2)`
+
+### BBR (`net/ipv4/tcp_bbr.c`)
+
+Uses `struct bbr` as private CA state. Four modes: `BBR_STARTUP`, `BBR_DRAIN`, `BBR_PROBE_BW`, `BBR_PROBE_RTT`:
+- Uses `cong_control` (not `cong_avoid`) — `bbr_main()` runs after all ACK processing
+- Models the path as a BDP pipe: `cwnd = pacing_gain * bw * min_rtt`
+- Tracks bandwidth via a windowed max filter and min RTT via `bbr->min_rtt_us`
+- Paces sends via `bbr_set_pacing_rate()` rather than relying solely on cwnd
+
+### Key `tcp_sock` Fields
+
+| Field | Description |
+|---|---|
+| `snd_cwnd` | sending congestion window (segments) |
+| `snd_ssthresh` | slow-start threshold; `TCP_INFINITE_SSTHRESH` = no threshold |
+| `srtt_us` | smoothed RTT in microseconds, left-shifted 3 |
+| `snd_cwnd_cnt` | linear increase counter for `tcp_cong_avoid_ai()` |
+| `snd_cwnd_clamp` | hard upper bound on `snd_cwnd` |
+| `is_cwnd_limited` | set when cwnd limits forward progress |
+
+---
+
+## Locking Summary
+
+| Lock | Type | Protects | Key File |
+|---|---|---|---|
+| `sk->sk_lock.slock` | `spinlock_t` | socket state from BH context; `bh_lock_sock()` / `lock_sock()` | `include/net/sock.h:83` |
+| `rtnl_mutex` | `mutex` (`rtnl_lock()`) | global network config: device registration, address/route changes, rtnetlink | `include/linux/rtnetlink.h:42` |
+| `dev->addr_list_lock` | `spinlock_t` | `dev->uc`, `dev->mc`, `dev->dev_addrs` hardware address lists | `include/linux/netdevice.h:2227` |
+| `netdev_queue._xmit_lock` | `spinlock_t` | per-TX-queue lock; held during `ndo_start_xmit()` for non-lockless drivers | `include/linux/netdevice.h:684` |
+| `tcp_hashinfo.ehash_locks[]` | `spinlock_t[]` | established socket hash table buckets | `include/net/inet_hashtables.h:152` |
+| `tcp_hashinfo.lhash2[].lock` | `spinlock_t` | listening socket hash table per-bucket lock | `include/net/inet_hashtables.h:137` |
+| `udp_hslot.lock` | `spinlock_t` | per-bucket lock in `udp_table` hash tables | `include/net/udp.h:69` |
+
+---
+
+## Source Files Reference
+
+| File | Purpose | Key Functions |
+|---|---|---|
+| `net/core/dev.c` | Central device layer; TX/RX dispatch, device lifecycle | `__dev_queue_xmit()`, `netif_receive_skb()`, `register_netdevice()` |
+| `net/core/skbuff.c` | sk_buff allocation, cloning, fragment management | `alloc_skb()`, `skb_clone()`, `pskb_expand_head()`, `kfree_skb()` |
+| `net/core/sock.c` | Socket base: allocation, options, send/receive buffers | `sk_alloc()`, `sock_init_data()`, `sock_setsockopt()` |
+| `net/core/gro.c` | GRO engine: packet coalescing | `napi_gro_receive()`, `dev_gro_receive()`, `napi_gro_complete()` |
+| `net/core/gso.c` | GSO software segmentation | `__skb_gso_segment()`, `skb_mac_gso_segment()` |
+| `net/core/net_namespace.c` | Network namespace lifecycle | `copy_net_ns()`, `register_pernet_subsys()`, `register_pernet_device()` |
+| `net/core/fib_rules.c` | Generic policy routing rules | `fib_rules_lookup()`, `fib_rules_register()` |
+| `net/ipv4/tcp.c` | TCP socket layer | `tcp_sendmsg()`, `tcp_recvmsg()`, `tcp_close()` |
+| `net/ipv4/tcp_input.c` | TCP receive: ACK handling, SACK, congestion | `tcp_rcv_established()`, `tcp_ack()`, `tcp_data_queue()` |
+| `net/ipv4/tcp_output.c` | TCP transmit: segmentation, retransmit, TSO | `tcp_write_xmit()`, `tcp_transmit_skb()`, `tcp_retransmit_skb()` |
+| `net/ipv4/tcp_cong.c` | Congestion control framework | `tcp_register_congestion_control()`, `tcp_cong_avoid_ai()`, `tcp_slow_start()` |
+| `net/ipv4/tcp_cubic.c` | CUBIC congestion control | `cubictcp_cong_avoid()`, `cubictcp_recalc_ssthresh()` |
+| `net/ipv4/tcp_bbr.c` | BBR congestion control | `bbr_main()`, `bbr_init()`, `bbr_update_bw()` |
+| `net/ipv4/route.c` | IPv4 route cache and lookup | `ip_route_input_slow()`, `ip_route_output_flow()` |
+| `net/ipv4/fib_trie.c` | LC-trie FIB implementation | `fib_table_lookup()`, `fib_table_insert()` |
+| `net/ipv4/ip_input.c` | IP receive: validation, local delivery | `ip_rcv()`, `ip_local_deliver()` |
+| `net/ipv4/ip_output.c` | IP transmit: routing, fragmentation | `ip_output()`, `ip_finish_output()`, `ip_fragment()` |
+| `net/ipv4/udp.c` | UDP send/receive, demux | `udp_sendmsg()`, `udp_recvmsg()`, `__udp4_lib_rcv()` |
+| **Headers** | | |
+| `include/linux/skbuff.h` | `sk_buff`, `skb_shared_info`, GSO flags | |
+| `include/linux/netdevice.h` | `net_device`, NAPI, `gro_result`, device ops | |
+| `include/net/sock.h` | `sock`, `socket_lock_t`, `proto` | |
+| `include/net/net_namespace.h` | `struct net`, `pernet_operations`, `init_net` | |
+| `include/net/tcp.h` | `tcp_congestion_ops`, CC helpers | |
+| `include/net/ip_fib.h` | `fib_table`, `fib_result`, `fib_lookup()` | |
+| `include/net/route.h` | `rtable`, route output helpers | |
+| `include/net/dst.h` | `dst_entry`, `dst_ops` | |

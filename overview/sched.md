@@ -16,6 +16,12 @@ handling, workqueues, load balancing, and scheduler topology.
 6. [Load Balancing](#6-load-balancing)
 7. [Scheduler Topology](#7-scheduler-topology)
 8. [PELT (Per-Entity Load Tracking)](#8-pelt-per-entity-load-tracking)
+9. [CFS/EEVDF Internals](#9-cfseevdf-internals)
+10. [Real-Time Scheduler](#10-real-time-scheduler)
+11. [Deadline Scheduler](#11-deadline-scheduler)
+12. [Context Switch](#12-context-switch)
+13. [Locking Summary](#13-locking-summary)
+14. [Source File Reference](#14-source-file-reference)
 
 ---
 
@@ -1907,33 +1913,471 @@ Load Contribution
 
 ---
 
-## Summary
+## 9. CFS/EEVDF Internals
 
-This document covered the essential components of the Linux kernel scheduler:
+### vruntime Calculation: `calc_delta_fair()` and `__calc_delta()`
 
-1. **Core Structures**: task_struct, rq, sched_class, sched_entity, cfs_rq, rt_rq
-2. **TTWU**: Task wakeup mechanism with CPU selection and preemption checks
-3. **IPI**: Inter-processor interrupts for cross-CPU scheduling coordination
-4. **IRQ Handling**: Hardirq, softirq, and scheduler integration via preempt_count
-5. **Workqueues**: Deferred execution in process context with kworker threads
-6. **Load Balancing**: Domain-based task migration with imbalance detection
-7. **Topology**: Hierarchical CPU organization for cache-aware scheduling
-8. **PELT**: Exponentially decayed load tracking for fair scheduling decisions
+**File:** `kernel/sched/fair.c`
 
-These components work together to provide efficient, fair, and responsive task
-scheduling across complex multi-core and NUMA systems.
+The CFS scheduler implements Earliest Eligible Virtual Deadline First (EEVDF). The core math converts wall-clock execution time into weighted virtual time.
+
+```c
+/* kernel/sched/fair.c:289 */
+static inline u64 calc_delta_fair(u64 delta, struct sched_entity *se)
+{
+    if (unlikely(se->load.weight != NICE_0_LOAD))
+        delta = __calc_delta(delta, NICE_0_LOAD, &se->load);
+    return delta;
+}
+```
+
+For nice-0 tasks (weight == `NICE_0_LOAD` == 1024), it returns `delta` unchanged. For all other weights it calls `__calc_delta()` (`kernel/sched/fair.c:259`):
+
+```
+vruntime_delta = delta_exec * weight / lw->weight
+               = delta_exec * (weight * lw->inv_weight) >> WMULT_SHIFT
+```
+
+where `WMULT_SHIFT` is 32. `lw->inv_weight` is a pre-computed reciprocal updated by `__update_inv_weight()`. The function uses `mul_u32_u32()` and `mul_u64_u32_shr()` to avoid 128-bit division at runtime. A heavier task has a larger `lw->weight` denominator, so its `vruntime` advances more slowly — it gets proportionally more CPU time.
+
+**vruntime advance in `update_curr()`** (`kernel/sched/fair.c:1235`):
+
+```c
+curr->vruntime += calc_delta_fair(delta_exec, curr);
+resched = update_deadline(cfs_rq, curr);
+update_min_vruntime(cfs_rq);
+```
+
+`update_deadline()` (`kernel/sched/fair.c:1028`) checks whether `vruntime` has passed `deadline`; if so it updates the EEVDF deadline:
+
+```
+se->deadline = se->vruntime + calc_delta_fair(se->slice, se)
+             = ve_i + r_i / w_i    (EEVDF virtual deadline)
+```
+
+### Red-Black Tree Operations
+
+`struct cfs_rq` holds tasks in a cached red-black tree:
+
+```c
+/* kernel/sched/sched.h:678 */
+struct rb_root_cached  tasks_timeline;  /* rb-tree ordered by vruntime/deadline */
+```
+
+The tree is augmented (`rb_add_augmented_cached`) to maintain a `min_vruntime` subtree invariant for EEVDF eligibility checks.
+
+#### `__enqueue_entity()` — `kernel/sched/fair.c:847`
+
+```c
+static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+    avg_vruntime_add(cfs_rq, se);
+    se->min_vruntime = se->vruntime;
+    se->min_slice = se->slice;
+    rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+                            __entity_less, &min_vruntime_cb);
+}
+```
+
+`avg_vruntime_add()` updates the per-`cfs_rq` weighted average vruntime. The comparator `__entity_less` orders by `vruntime`; `min_vruntime_cb` maintains the augmented min-vruntime value for subtree queries.
+
+#### `__dequeue_entity()` — `kernel/sched/fair.c:856`
+
+```c
+static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+    rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
+                              &min_vruntime_cb);
+    avg_vruntime_sub(cfs_rq, se);
+}
+```
+
+#### `__pick_first_entity()` — `kernel/sched/fair.c:873`
+
+Returns the leftmost node (smallest vruntime) in O(1) via the cached pointer in `rb_root_cached`. This is not necessarily the next to run — EEVDF selects by earliest virtual deadline among eligible tasks.
+
+### `pick_next_task_fair()` Flow and cgroup Hierarchy
+
+**File:** `kernel/sched/fair.c:8867`
+
+**Flow:**
+
+1. Calls `pick_task_fair(rq)` (`kernel/sched/fair.c:8837`) which walks the cgroup hierarchy:
+   ```c
+   cfs_rq = &rq->cfs;          /* start at root cfs_rq */
+   do {
+       update_curr(cfs_rq);
+       if (check_cfs_rq_runtime(cfs_rq)) goto again;  /* throttle check */
+       se = pick_next_entity(rq, cfs_rq);
+       cfs_rq = group_cfs_rq(se);  /* descend into group if se is a group */
+   } while (cfs_rq);            /* stop when se is a task */
+   return task_of(se);
+   ```
+
+2. With `CONFIG_FAIR_GROUP_SCHED`, avoids walking the entire hierarchy by finding the **lowest common ancestor** between `prev` and `next`:
+   ```c
+   while (!(cfs_rq = is_same_group(se, pse))) {
+       if (se_depth <= pse_depth) { put_prev_entity(cfs_rq_of(pse), pse); pse = parent_entity(pse); }
+       if (se_depth >= pse_depth) { set_next_entity(cfs_rq_of(se), se); se = parent_entity(se); }
+   }
+   ```
+   Only the divergent branches are updated.
+
+3. If no runnable task is found, calls `sched_balance_newidle()` for idle load balancing.
+
+### `update_curr()` — `kernel/sched/fair.c:1235`
+
+Called from timer tick and at every scheduling decision point:
+
+1. **Delta computation:** `delta_exec = rq_clock_task(rq) - curr->exec_start`
+2. **vruntime advance:** `curr->vruntime += calc_delta_fair(delta_exec, curr)`
+3. **Deadline update:** `resched = update_deadline(cfs_rq, curr)`
+4. **cputime accounting:** `update_curr_task(p, delta_exec)` for actual tasks
+5. **DL server accounting:** `dl_server_update(&rq->fair_server, delta_exec)` if active
+6. **CFS bandwidth:** `account_cfs_rq_runtime(cfs_rq, delta_exec)` — decrements `cfs_rq->runtime_remaining`
+7. **Preemption trigger:** `if (resched || did_preempt_short(cfs_rq, curr)) resched_curr_lazy(rq)`
+
+### `place_entity()` — `kernel/sched/fair.c:5200`
+
+Sets the initial `vruntime` and EEVDF `deadline` when a task is enqueued:
+
+```c
+u64 vruntime = avg_vruntime(cfs_rq);  /* weighted average of all entity vruntimes */
+```
+
+**Lag preservation** (`SCHED_FEAT(PLACE_LAG)`): For a waking task with positive virtual lag, the entity's vruntime is set below the current average to restore its service entitlement:
+
+```c
+se->vruntime = vruntime - lag;
+lag_inflated = lag * (W + w_i) / W    /* scaled for weight change */
+```
+
+**Initial placement** (new task, `ENQUEUE_INITIAL`): If `SCHED_FEAT(PLACE_DEADLINE_INITIAL)`, the virtual slice is halved so a newly forked task enters at the midpoint of a slice.
+
+**Deadline assignment:** `se->deadline = se->vruntime + vslice`
+
+### CFS Bandwidth: `struct cfs_bandwidth`
+
+**File:** `kernel/sched/sched.h:423`
+
+```c
+struct cfs_bandwidth {
+    raw_spinlock_t    lock;             /* guards quota/runtime fields */
+    ktime_t           period;           /* replenishment period */
+    u64               quota;            /* runtime allowed per period (ns) */
+    u64               runtime;          /* runtime remaining in current period */
+    u64               burst;            /* extra burst allowance */
+    u8                idle;             /* pool was unused last period */
+    u8                period_active;
+    struct hrtimer    period_timer;     /* fires at end of period to replenish */
+    struct hrtimer    slack_timer;      /* deferred return of unused runtime */
+    struct list_head  throttled_cfs_rq; /* list of throttled cfs_rqs */
+    int               nr_periods;
+    int               nr_throttled;
+    u64               throttled_time;
+};
+```
+
+One `cfs_bandwidth` exists per `task_group` (cgroup). Per-CPU `cfs_rq` objects draw runtime slices from it.
+
+`assign_cfs_rq_runtime()` (`kernel/sched/fair.c:5765`) acquires `cfs_b->lock` and takes up to `sched_cfs_bandwidth_slice()` ns from `cfs_b->runtime`, adding it to `cfs_rq->runtime_remaining`.
+
+`throttle_cfs_rq()` (`kernel/sched/fair.c:5880`) is called when no additional runtime is available:
+1. Attempts a last-chance 1ns runtime request; aborts throttle if it succeeds
+2. Adds the `cfs_rq` to `cfs_b->throttled_cfs_rq` list
+3. Walks up the hierarchy calling `tg_throttle_down()` to freeze PELT averages
+4. Dequeues ancestor entities with `DEQUEUE_SLEEP | DEQUEUE_SPECIAL`
+5. Period timer replenishes `cfs_b->runtime` and calls `unthrottle_cfs_rq()`
 
 ---
 
-## References
+## 10. Real-Time Scheduler
 
-- Linux kernel source: `kernel/sched/`
-- Documentation: `Documentation/scheduler/`
-- Key files:
-  - `kernel/sched/core.c` - Core scheduler
-  - `kernel/sched/fair.c` - CFS implementation
-  - `kernel/sched/rt.c` - Real-time scheduler
-  - `kernel/sched/topology.c` - Domain building
-  - `kernel/sched/pelt.c` - Load tracking
-  - `kernel/workqueue.c` - Workqueue system
-  - `kernel/softirq.c` - Softirq handling
+### `struct rt_rq` — `kernel/sched/sched.h:814`
+
+```c
+struct rt_rq {
+    struct rt_prio_array  active;          /* bitmap + 100 FIFO queues */
+    unsigned int          rt_nr_running;   /* total RT tasks on this rq */
+    unsigned int          rr_nr_running;   /* SCHED_RR tasks specifically */
+    struct {
+        int  curr;   /* highest (lowest numerically) queued RT priority */
+        int  next;   /* second highest (CONFIG_SMP only) */
+    } highest_prio;
+    bool             overloaded;       /* more than one RT task on this CPU */
+    struct plist_head pushable_tasks;  /* tasks that could be pushed to another CPU */
+    int              rt_queued;        /* rq is on the RT global list */
+    int              rt_throttled;
+    u64              rt_time;          /* runtime consumed in current period */
+    u64              rt_runtime;       /* allowed runtime per period */
+    raw_spinlock_t   rt_runtime_lock;  /* nests inside rq->lock */
+    unsigned int     rt_nr_boosted;    /* PI-boosted tasks count */
+};
+```
+
+### `struct rt_prio_array` — `kernel/sched/sched.h:313`
+
+```c
+struct rt_prio_array {
+    DECLARE_BITMAP(bitmap, MAX_RT_PRIO+1); /* one extra bit as delimiter */
+    struct list_head queue[MAX_RT_PRIO];   /* 100 FIFO queues, index = priority */
+};
+```
+
+`MAX_RT_PRIO` is 100. Priority 0 is highest. Each `queue[i]` is a `list_head` of `sched_rt_entity` objects. The bitmap has bit `i` set if `queue[i]` is non-empty, enabling O(1) highest-priority lookup via `sched_find_first_bit()`. Bit 100 is always set as a sentinel.
+
+### RT Throttling
+
+#### `struct rt_bandwidth` — `kernel/sched/sched.h:318`
+
+```c
+struct rt_bandwidth {
+    raw_spinlock_t   rt_runtime_lock;
+    ktime_t          rt_period;         /* default 1s */
+    u64              rt_runtime;        /* default 950ms */
+    struct hrtimer   rt_period_timer;
+    unsigned int     rt_period_active;
+};
+```
+
+Controlled by:
+- `/proc/sys/kernel/sched_rt_period_us` — default 1,000,000 (1s)
+- `/proc/sys/kernel/sched_rt_runtime_us` — default 950,000 (0.95s); -1 disables throttling
+
+### Push/Pull Migration
+
+#### `push_rt_task()` — `kernel/sched/rt.c:1975`
+
+Invoked when the current CPU has more than one runnable RT task (`rq->rt.overloaded == true`):
+
+1. Calls `pick_next_pushable_task(rq)` for the highest-priority non-running RT task
+2. If the pushable task has higher priority than `rq->curr`, reschedules locally
+3. Calls `find_lock_lowest_rq(next_task, rq)` to find a destination CPU with lower RT priority
+4. Locks destination rq using ascending-CPU-id order
+5. For migration-disabled tasks, uses `stop_one_cpu_nowait()` with `push_cpu_stop`
+
+#### `pull_rt_task()` — `kernel/sched/rt.c:2271`
+
+Invoked when a CPU's RT priority decreases (e.g., RT task blocks):
+
+1. Returns if `rt_overloaded()` count is 0
+2. With `HAVE_RT_PUSH_IPI`, sends an IPI to overloaded CPUs rather than scanning
+3. Otherwise iterates over `rq->rd->rto_mask` (CPUs with >1 runnable RT task), double-locking runqueues in CPU-id order
+
+#### RT vs. CFS Balancing
+
+| Aspect | RT Scheduler | CFS Scheduler |
+|---|---|---|
+| Trigger | Task blocks or wakes | Periodic tick, idle entry |
+| Mechanism | Explicit push/pull | `load_balance()` with `find_busiest_group()` |
+| Granularity | Single highest-priority task | Groups of tasks to equalize load |
+| Priority criterion | Destination must have lower priority | Destination must be less loaded |
+| Overload tracking | `rq->rt.overloaded` + `rd->rto_mask` | PELT averages in `sched_group` |
+
+---
+
+## 11. Deadline Scheduler
+
+### `struct sched_dl_entity` — `include/linux/sched.h:608`
+
+```c
+struct sched_dl_entity {
+    struct rb_node    rb_node;           /* node in dl_rq red-black tree */
+
+    /* Parameters set by sched_setattr(), constant between calls */
+    u64  dl_runtime;   /* maximum runtime per instance (ns) */
+    u64  dl_deadline;  /* relative deadline per instance (ns) */
+    u64  dl_period;    /* period / minimum inter-arrival time (ns) */
+    u64  dl_bw;        /* dl_runtime / dl_period (utilization) */
+    u64  dl_density;   /* dl_runtime / dl_deadline */
+
+    /* Dynamic runtime state */
+    s64  runtime;      /* remaining runtime for current instance (can be < 0) */
+    u64  deadline;     /* absolute deadline of current instance */
+
+    /* Bitfield flags */
+    unsigned int dl_throttled      : 1; /* runtime exhausted */
+    unsigned int dl_yielded        : 1; /* gave up CPU early */
+    unsigned int dl_non_contending : 1; /* blocking but still counting toward active util */
+    unsigned int dl_overrun        : 1; /* overrun notification requested */
+    unsigned int dl_server         : 1; /* DL server entity, not a task */
+    unsigned int dl_defer          : 1; /* deferrable server */
+
+    struct hrtimer dl_timer;         /* replenishment timer */
+    struct hrtimer inactive_timer;   /* 0-lag time timer for GRUB */
+    struct sched_dl_entity *pi_se;   /* priority-inheritance boosted parameters */
+};
+```
+
+### Admission Control
+
+`sched_setattr()` → `__sched_setscheduler()` → `sched_dl_overflow()` (`kernel/sched/deadline.c:3246`) → `__dl_overflow()` (`kernel/sched/deadline.c:239`):
+
+```c
+static inline bool
+__dl_overflow(struct dl_bw *dl_b, unsigned long cap, u64 old_bw, u64 new_bw)
+{
+    return dl_b->bw != -1 &&
+           cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw;
+}
+```
+
+`dl_b->bw` is the per-CPU bandwidth cap. `dl_b->total_bw` accumulates `dl_bw` values of all admitted tasks. If adding `new_bw` would exceed capacity, returns `-EBUSY`.
+
+### Runtime Replenishment: `dl_task_timer()` — `kernel/sched/deadline.c:1264`
+
+Each SCHED_DEADLINE task has its own `hrtimer` armed when runtime is exhausted (`dl_throttled = 1`). On firing:
+
+1. Checks task still has deadline policy and is not PI-boosted
+2. If task is not on the runqueue (blocked while throttled): `replenish_dl_entity()` only
+3. If on runqueue: `enqueue_task_dl(rq, p, ENQUEUE_REPLENISH)` → `replenish_dl_entity()` → re-enqueue
+
+#### `replenish_dl_entity()` — `kernel/sched/deadline.c:847`
+
+CBS (Constant Bandwidth Server) replenishment:
+
+```c
+while (dl_se->runtime <= 0) {
+    dl_se->deadline += pi_of(dl_se)->dl_period;
+    dl_se->runtime  += pi_of(dl_se)->dl_runtime;
+}
+```
+
+Implements the CBS rule: a job that overruns postpones its next absolute deadline by one period per period of overrun.
+
+### EDF Ordering
+
+The `dl_rq` is a red-black tree (`struct rb_root_cached`) ordered by `dl_se->deadline` (absolute deadline). The leftmost node (earliest deadline) is always selected next — pure EDF within non-throttled tasks. O(1) minimum extraction via `rb_root_cached`.
+
+### `struct sched_attr` — `include/uapi/linux/sched/types.h:98`
+
+```c
+struct sched_attr {
+    __u32 size;
+    __u32 sched_policy;       /* SCHED_DEADLINE */
+    __u64 sched_flags;
+    __s32 sched_nice;
+    __u32 sched_priority;
+    __u64 sched_runtime;      /* runtime per period (ns) */
+    __u64 sched_deadline;     /* relative deadline (ns) */
+    __u64 sched_period;       /* period (ns); 0 = use sched_deadline */
+    __u32 sched_util_min;
+    __u32 sched_util_max;
+};
+```
+
+Period limits: `sched_deadline_period_min_us` (100us) and `sched_deadline_period_max_us` (~4s) at `kernel/sched/deadline.c:26-27`.
+
+---
+
+## 12. Context Switch
+
+### `__schedule()` Flow — `kernel/sched/core.c:6644`
+
+```c
+static void __sched notrace __schedule(int sched_mode)
+```
+
+Called with preemption disabled. `sched_mode`: `SM_NONE`, `SM_PREEMPT`, `SM_IDLE`, `SM_RTLOCK_WAIT`.
+
+**Sequence:**
+
+1. `cpu = smp_processor_id(); rq = cpu_rq(cpu); prev = rq->curr;`
+2. `local_irq_disable(); rcu_note_context_switch(preempt);`
+3. `rq_lock(rq, &rf); smp_mb__after_spinlock();` — acquires `rq->__lock`, full memory barrier
+4. `update_rq_clock(rq);`
+5. If not preemption and `prev_state != 0`: `try_to_block_task()` deactivates the task
+6. **`next = pick_next_task(rq, prev, &rf);`** — selects highest-priority class with a runnable task
+7. `clear_tsk_need_resched(prev); clear_preempt_need_resched();`
+8. If `prev != next`:
+   - `RCU_INIT_POINTER(rq->curr, next);` — publishes new current
+   - `rq = context_switch(rq, prev, next, &rf);`
+
+### `context_switch()` — `kernel/sched/core.c:5315`
+
+**Sequence:**
+
+1. **`prepare_task_switch(rq, prev, next)`**: perf events, rseq preempt, kmap_local save, preempt notifiers, `next->on_cpu = 1`
+
+2. **MM switch** (lazy TLB logic):
+   - **kernel → kernel** (`!next->mm`): `enter_lazy_tlb()` borrows prev's `active_mm`
+   - **user → kernel**: `enter_lazy_tlb()` + `mmgrab_lazy_tlb()` takes reference on prev's `active_mm`
+   - **any → user** (`next->mm` set): `switch_mm_irqs_off(prev->active_mm, next->mm, next)` switches page tables and ASID/PCID
+   - **kernel → user**: stores `prev->active_mm` in `rq->prev_mm` for `finish_task_switch()` to drop
+
+3. **`prepare_lock_switch(rq, next, rf)`** — transfers rq lock ownership across the context switch
+
+4. **`switch_to(prev, next, prev)`** — on x86 (`arch/x86/entry/entry_64.S:177`):
+   - Saves callee-saved registers: `rbp`, `rbx`, `r12`–`r15` onto current stack
+   - Switches stack: `movq %rsp, TASK_threadsp(%rdi); movq TASK_threadsp(%rsi), %rsp`
+   - Optionally refills RSB for Spectre mitigation
+   - Restores callee-saved registers from new stack
+   - `jmp __switch_to` — FPU/SSE state, `thread_struct`, stack canary, `fsbase`/`gsbase`, debug registers
+
+5. **`finish_task_switch(prev)`** — runs in context of **new** `current`:
+   - `finish_task(prev)` clears `prev->on_cpu`
+   - `finish_lock_switch(rq)` re-enables IRQs and releases spinlock
+   - If `rq->prev_mm` set (kernel→user): `mmdrop_lazy_tlb(mm)` drops borrowed mm
+   - If `prev_state == TASK_DEAD`: `put_task_struct_rcu_user(prev)` releases task
+
+### `switch_mm_irqs_off()` — x86 ASID/PCID (`arch/x86/mm/tlb.c:802`)
+
+- Reads `cpu_tlbstate.loaded_mm` and `cpu_tlbstate.loaded_mm_asid`
+- If switching to same mm as loaded (lazy TLB return): clears lazy flag, returns without CR3 write if TLB generation is current
+- Otherwise: selects ASID/PCID slot, checks `ctxs[new_asid].tlb_gen` against `next->context.tlb_gen`
+  - If generation current: loads CR3 with `noflush` bit (keeps existing TLB entries)
+  - If stale: loads CR3 without noflush (full TLB flush for this ASID)
+
+### Lazy TLB Mode
+
+When switching to a kernel thread (`next->mm == NULL`), the CPU does not reload CR3. `enter_lazy_tlb()` sets `cpu_tlbstate_shared.is_lazy = true`. If a TLB shootdown IPI arrives for that mm while the CPU is lazy, the handler defers the flush. The flush is applied via `leave_mm()` before the CPU next enters user space. This avoids unnecessary CR3 writes when scheduling kernel threads.
+
+---
+
+## 13. Locking Summary
+
+| Lock | Type | Protects | Key File |
+|---|---|---|---|
+| `rq->__lock` | `raw_spinlock_t` | All `struct rq` fields: run queues (`cfs`, `rt`, `dl`), `nr_running`, `curr`, clock fields, load balancing state | `kernel/sched/sched.h:1121` |
+| `task_struct->pi_lock` | `raw_spinlock_t` | PI waiter tree, `pi_top_task`, task state transitions in `try_to_wake_up()`, `p->on_rq` during wakeup, `p->sched_task_group` | `include/linux/sched.h:1202` |
+| `cfs_bandwidth->lock` | `raw_spinlock_t` | `runtime`, `quota`, `burst`, `throttled_cfs_rq` list, period/slack timers | `kernel/sched/sched.h:425` |
+| `rt_bandwidth->rt_runtime_lock` | `raw_spinlock_t` | Global `rt_runtime` and `rt_time` | `kernel/sched/sched.h:320` |
+| `rt_rq->rt_runtime_lock` | `raw_spinlock_t` | Per-group `rt_runtime` and `rt_time` (nests inside `rq->__lock`) | `kernel/sched/sched.h:838` |
+| `dl_bw->lock` | `raw_spinlock_t` | `bw` (capacity cap), `total_bw` (sum of admitted bandwidths); per-root-domain or per-CPU | `kernel/sched/sched.h:351` |
+| `cfs_rq->removed.lock` | `raw_spinlock_t` | Deferred PELT removal: `removed.load_avg`, `removed.util_avg`, `removed.runnable_avg` | `kernel/sched/sched.h:696` |
+
+**Lock Ordering Rules:**
+
+- `pi_lock` → `rq->__lock`: The canonical pattern is `task_rq_lock(p, &rf)` which acquires `p->pi_lock` first, then `rq->__lock` (`kernel/sched/sched.h:1826-1844`)
+
+- When locking **two runqueues** (load balancing, migration): always lock in **ascending CPU-id order** via `double_rq_lock(rq1, rq2)`. With `CONFIG_SCHED_CORE`, core-id takes precedence
+
+- `cfs_bandwidth->lock` is acquired without `rq->__lock` from the period timer path (IRQ context). From the scheduling path, it nests after `rq->__lock`
+
+- `rt_rq->rt_runtime_lock` nests **inside** `rq->__lock`
+
+---
+
+## 14. Source File Reference
+
+| File | Purpose | Key Functions / Symbols |
+|---|---|---|
+| `kernel/sched/core.c` | Scheduler core: scheduling loop, task state, wakeup, fork, CPU hotplug | `__schedule()`, `schedule()`, `try_to_wake_up()`, `context_switch()`, `finish_task_switch()`, `pick_next_task()`, `sched_fork()`, `wake_up_new_task()` |
+| `kernel/sched/fair.c` | CFS (EEVDF) scheduler class | `update_curr()`, `place_entity()`, `pick_next_task_fair()`, `enqueue_task_fair()`, `dequeue_task_fair()`, `__enqueue_entity()`, `calc_delta_fair()`, `throttle_cfs_rq()`, `assign_cfs_rq_runtime()` |
+| `kernel/sched/rt.c` | SCHED_FIFO and SCHED_RR scheduler class | `enqueue_task_rt()`, `dequeue_task_rt()`, `pick_next_task_rt()`, `push_rt_task()`, `pull_rt_task()`, `sched_rt_period_timer()` |
+| `kernel/sched/deadline.c` | SCHED_DEADLINE (EDF+CBS) scheduler class | `enqueue_task_dl()`, `dequeue_task_dl()`, `pick_next_task_dl()`, `update_curr_dl()`, `dl_task_timer()`, `replenish_dl_entity()`, `sched_dl_overflow()` |
+| `kernel/sched/idle.c` | Idle task and CPU idle loop | `cpu_startup_entry()`, `do_idle()`, `cpuidle_idle_call()`, `pick_next_task_idle()` |
+| `kernel/sched/stop_task.c` | Highest-priority stop class (migration threads) | `pick_task_stop()`, `set_next_task_stop()` |
+| `kernel/sched/topology.c` | CPU topology discovery and sched domain construction | `build_sched_domains()`, `sched_init_numa()`, `init_sched_groups_capacity()` |
+| `kernel/sched/pelt.c` | Per-Entity Load Tracking — exponential decay load/util averaging | `___update_load_avg()`, `__update_load_avg_blocked_se()`, `update_rt_rq_load_avg()` |
+| `kernel/sched/stats.c` | `/proc/schedstat` — per-CPU scheduling statistics | `show_schedstat()` |
+| `kernel/sched/debug.c` | `/proc/sched_debug` and scheduler feature flags | `print_cpu()`, `sched_debug_show()`, `sched_feat_names[]` |
+| `kernel/sched/sched.h` | Internal scheduler header: all major structs, lock primitives | `struct rq`, `struct cfs_rq`, `struct rt_rq`, `struct dl_rq`, `struct cfs_bandwidth`, `struct sched_class`, `rq_lock()`, `double_rq_lock()` |
+| `kernel/sched/autogroup.c` | Automatic task grouping by session | `sched_autogroup_create_attach()`, `sched_autogroup_exit()` |
+| `kernel/sched/cpufreq_schedutil.c` | `schedutil` CPUfreq governor: frequency from PELT | `sugov_update_single_freq()`, `sugov_should_update_freq()` |
+| `kernel/sched/cputime.c` | CPU time accounting: user, system, guest, vtime | `account_user_time()`, `account_system_time()`, `vtime_task_switch()` |
+| `kernel/sched/wait.c` | Wait queue implementation | `__wake_up()`, `add_wait_queue()`, `finish_wait()` |
+| `include/linux/sched.h` | `struct task_struct`, `struct sched_entity`, `struct sched_dl_entity` | Task definition, scheduler policy constants |
+| `include/linux/sched/topology.h` | Scheduler domain/group structures | `struct sched_domain`, `struct sched_group`, `SD_*` flags |
+| `include/uapi/linux/sched.h` | UAPI scheduling policy constants | `SCHED_NORMAL` (0), `SCHED_FIFO` (1), `SCHED_RR` (2), `SCHED_BATCH` (3), `SCHED_IDLE` (5), `SCHED_DEADLINE` (6), `SCHED_EXT` (7) |
+| `include/uapi/linux/sched/types.h` | UAPI `sched_attr` for `sched_setattr(2)` | `struct sched_attr` |

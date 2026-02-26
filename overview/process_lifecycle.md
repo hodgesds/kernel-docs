@@ -14,6 +14,12 @@
 11. [Credentials and Capabilities](#credentials-and-capabilities)
 12. [Namespaces](#namespaces)
 13. [Control Groups (cgroups)](#control-groups-cgroups)
+14. [copy_process() Internals](#copy_process-internals)
+15. [exec Internals](#exec-internals)
+16. [Signal Delivery Internals](#signal-delivery-internals)
+17. [Process Exit Path](#process-exit-path)
+18. [Locking Summary](#locking-summary)
+19. [Source File Reference](#source-file-reference)
 
 ---
 
@@ -1788,27 +1794,729 @@ mount -t cgroup2 none /sys/fs/cgroup
 
 ---
 
-## Summary
+## copy_process() Internals
 
-The Linux process lifecycle involves:
+### `struct kernel_clone_args` (`include/linux/sched/task.h:23–47`)
 
-| Stage | Key Functions | Structures |
-|-------|---------------|------------|
-| Creation | fork(), clone(), copy_process() | task_struct, mm_struct |
-| Memory Mapping | mmap(), do_mmap() | vm_area_struct |
-| Execution | execve(), load_elf_binary() | linux_binprm |
-| Dynamic Linking | _dl_runtime_resolve() | PLT, GOT, Elf64_Dyn |
-| Running | schedule(), wake_up() | task states |
-| Termination | do_exit(), exit_notify() | exit codes |
-| Reaping | wait(), release_task() | zombie state |
-| Signals | send_signal(), do_signal() | sigpending, sigqueue |
+```c
+struct kernel_clone_args {
+    u64 flags;              /* CLONE_* flags bitmask */
+    int __user *pidfd;      /* where to store pidfd (CLONE_PIDFD) */
+    int __user *child_tid;  /* for CLONE_CHILD_SETTID / CLONE_CHILD_CLEARTID */
+    int __user *parent_tid; /* for CLONE_PARENT_SETTID */
+    const char *name;       /* task name (kthreads) */
+    int exit_signal;        /* signal to send parent on exit */
+    u32 kthread:1;          /* is this a kthread? */
+    u32 io_thread:1;        /* is this an IO thread? */
+    u32 user_worker:1;      /* is this a user worker? */
+    u32 no_files:1;         /* skip file descriptor copy */
+    unsigned long stack;    /* stack pointer for new task */
+    unsigned long stack_size;
+    unsigned long tls;      /* TLS value (CLONE_SETTLS) */
+    pid_t *set_tid;         /* explicit TID list for pid namespaces */
+    size_t set_tid_size;    /* number of elements in set_tid */
+    int cgroup;             /* cgroup fd (clone3) */
+    int idle;               /* idle task flag */
+    int (*fn)(void *);      /* kthread function */
+    void *fn_arg;
+    struct cgroup *cgrp;
+    struct css_set *cset;
+    unsigned int kill_seq;
+};
+```
 
-Key mechanisms:
-- **clone()**: Fundamental syscall for creating processes and threads
-- **mmap()**: Memory mapping for loading code, allocating memory, IPC
-- **PLT/GOT**: Lazy symbol resolution for dynamic linking
-- **Namespaces**: Resource view isolation (PID, network, mount, etc.)
-- **Cgroups**: Resource limits and accounting
-- **Credentials/Capabilities**: Permission control
-- **Seccomp**: System call filtering
+### `copy_process()` Signature (`kernel/fork.c:2146–2150`)
+
+```c
+__latent_entropy struct task_struct *copy_process(
+    struct pid *pid,
+    int trace,
+    int node,
+    struct kernel_clone_args *args)
+```
+
+### Clone Flag Validation (early in `copy_process`, lines 2163–2211)
+
+Before any allocation, `copy_process()` enforces these invariants:
+
+| Condition | Error | Reason |
+|---|---|---|
+| `CLONE_NEWNS \| CLONE_FS` together | `-EINVAL` | Cannot share FS root across mount namespaces |
+| `CLONE_NEWUSER \| CLONE_FS` together | `-EINVAL` | User namespace cannot share FS |
+| `CLONE_THREAD` without `CLONE_SIGHAND` | `-EINVAL` | Threads must share signal handlers |
+| `CLONE_SIGHAND` without `CLONE_VM` | `-EINVAL` | Shared sighand implies shared VM |
+| `CLONE_PARENT` on global/container init | `-EINVAL` | Would create multi-rooted trees |
+| `CLONE_THREAD` with `CLONE_NEWUSER`/`CLONE_NEWPID` | `-EINVAL` | Thread cannot be in different PID/user ns |
+| `CLONE_PIDFD \| CLONE_DETACHED` | `-EINVAL` | Conflicting flags |
+
+### Detailed Flow (`kernel/fork.c:2219–2637`)
+
+**Phase 1: Signal handling setup (lines 2219–2229)**
+```
+spin_lock_irq(&current->sighand->siglock)
+  if !CLONE_THREAD: hlist_add_head(&delayed.node, &signal->multiprocess)
+  recalc_sigpending()
+spin_unlock_irq(...)
+→ if task_sigpending(current): goto fork_out (-ERESTARTNOINTR)
+```
+
+**Phase 2: Allocate task struct (lines 2232–2250)**
+```
+dup_task_struct(current, node)
+  alloc_task_struct_node(node)         ← slab alloc from task_struct cache
+  arch_dup_task_struct(tsk, orig)      ← struct copy (*dst = *src)
+  alloc_thread_stack_node(tsk, node)   ← allocate kernel stack
+  setup_thread_stack(tsk, orig)        ← copy thread_info
+  set_task_stack_end_magic(tsk)        ← STACK_END_MAGIC canary
+  refcount_set(&tsk->rcu_users, 2)     ← 1 for userspace, 1 for scheduler
+  refcount_set(&tsk->usage, 1)
+```
+
+**Phase 3: Credentials and limits (lines 2266–2285)**
+```
+copy_creds(p, clone_flags)             ← fork credential COW
+is_rlimit_overlimit(...NPROC...)       ← RLIMIT_NPROC check (-EAGAIN)
+nr_threads >= max_threads check        ← system-wide thread limit
+```
+
+**Phase 4: Scheduler and cgroup init (lines 2287–2383)**
+```
+delayacct_tsk_init(p)
+cgroup_fork(p)                         ← pin CSS set
+sched_fork(clone_flags, p)             ← assign CPU, set state=TASK_NEW
+perf_event_init_task(p, clone_flags)
+audit_alloc(p)
+shm_init_task(p)
+```
+
+**Phase 5: Security hook (line 2384–2386)**
+```
+security_task_alloc(p, clone_flags)    ← LSM hook; goto bad_fork_cleanup_audit on error
+```
+
+**Phase 6: Resource copying (lines 2387–2413) — the canonical sequence**
+```
+copy_semundo(clone_flags, p)
+copy_files(clone_flags, p, args->no_files)   ← CLONE_FILES: share; else dup fdtable
+copy_fs(clone_flags, p)                       ← CLONE_FS: share; else copy fs_struct
+copy_sighand(clone_flags, p)                  ← CLONE_SIGHAND: share; else dup sighand
+copy_signal(clone_flags, p)                   ← CLONE_THREAD: share; else alloc new
+copy_mm(clone_flags, p)                       ← CLONE_VM: share; else dup_mm() → COW
+copy_namespaces(clone_flags, p)               ← various CLONE_NEW* flags
+copy_io(clone_flags, p)                       ← io context
+copy_thread(p, args)                          ← arch-specific: sets up stack frame/entry point
+```
+
+**Phase 7: PID allocation (lines 2417–2424)**
+```
+alloc_pid(p->nsproxy->pid_ns_for_children, args->set_tid, args->set_tid_size)
+```
+PID is allocated in all visible namespaces. A `struct upid` is created for each level.
+
+**Phase 8: PIDFD setup (lines 2431–2442)**
+If `CLONE_PIDFD`:
+```
+__pidfd_prepare(pid, flags, &pidfile)
+put_user(pidfd, args->pidfd)
+```
+
+**Phase 9: Make task visible under tasklist_lock (lines 2530–2621)**
+```
+write_lock_irq(&tasklist_lock)
+  p->real_parent = current (or current->real_parent if CLONE_PARENT/CLONE_THREAD)
+  p->start_time = ktime_get_ns()
+  p->start_boottime = ktime_get_boottime_ns()
+  if thread_group_leader(p):
+    list_add_tail(&p->sibling, &p->real_parent->children)
+    list_add_tail_rcu(&p->tasks, &init_task.tasks)
+    attach_pid(p, PIDTYPE_TGID/PGID/SID)
+    __this_cpu_inc(process_counts)
+  else:
+    signal->nr_threads++
+    signal->quick_threads++
+    list_add_tail_rcu(&p->thread_node, &signal->thread_head)
+  attach_pid(p, PIDTYPE_PID)
+  nr_threads++
+write_unlock_irq(&tasklist_lock)
+```
+
+**Phase 10: Post-visible setup (lines 2623–2636)**
+```
+fd_install(pidfd, pidfile)             ← install pidfd into caller's fdtable
+proc_fork_connector(p)                ← netlink proc event
+sched_post_fork(p)                     ← complete scheduler setup
+cgroup_post_fork(p, args)
+perf_event_fork(p)
+trace_task_newtask(p, clone_flags)
+uprobe_copy_process(p, clone_flags)
+copy_oom_score_adj(clone_flags, p)
+```
+
+### Clone Flags Behavior Summary
+
+| Flag | Effect in `copy_process()` |
+|---|---|
+| `CLONE_VM` | `copy_mm()` increments mm refcount (shares); otherwise `dup_mm()` with COW |
+| `CLONE_FS` | `copy_fs()` increments `fs->users` (shares `fs_struct`); otherwise `copy_fs_struct()` |
+| `CLONE_FILES` | `copy_files()` increments `files->count` (shares fdtable); otherwise duplicates |
+| `CLONE_SIGHAND` | `copy_sighand()` increments refcount (shares `sighand_struct`); otherwise duplicates |
+| `CLONE_THREAD` | shares `signal_struct`; sets `p->tgid = current->tgid`, `p->group_leader` |
+| `CLONE_NEWNS` | `copy_namespaces()` creates new `mnt_namespace` |
+| `CLONE_NEWPID` | `copy_namespaces()` creates new `pid_namespace`; child is PID 1 in it |
+| `CLONE_PIDFD` | allocates pidfd via `__pidfd_prepare()`, writes fd to `args->pidfd` |
+| `CLONE_PARENT_SETTID` | `put_user(pid_nr, args->parent_tid)` done in `kernel_clone()` |
+| `CLONE_CHILD_SETTID` | sets `p->set_child_tid`; written in `mm_release()` |
+| `CLONE_CHILD_CLEARTID` | sets `p->clear_child_tid`; cleared + futex wake in `mm_release()` |
+
+### Error Unwind Labels (`kernel/fork.c:2639–2703`)
+
+The unwind chain is label-based, releasing each resource in reverse order of acquisition:
+
+```
+bad_fork_core_free      → sched_core_free(p); unlock sighand+tasklist
+bad_fork_cancel_cgroup  → cgroup_cancel_fork(p, args)
+bad_fork_put_pidfd      → fput(pidfile); put_unused_fd(pidfd)
+bad_fork_free_pid       → free_pid(pid)
+bad_fork_cleanup_thread → exit_thread(p)
+bad_fork_cleanup_io     → exit_io_context(p)
+bad_fork_cleanup_namespaces → exit_task_namespaces(p)
+bad_fork_cleanup_mm     → mm_clear_owner(p->mm); mmput(p->mm)
+bad_fork_cleanup_signal → free_signal_struct(p->signal)
+bad_fork_cleanup_sighand → __cleanup_sighand(p->sighand)
+bad_fork_cleanup_fs     → exit_fs(p)
+bad_fork_cleanup_files  → exit_files(p)
+bad_fork_cleanup_semundo → exit_sem(p)
+bad_fork_cleanup_security → security_task_free(p)
+bad_fork_cleanup_audit  → audit_free(p)
+bad_fork_cleanup_perf   → perf_event_free_task(p)
+bad_fork_sched_cancel_fork → sched_cancel_fork(p)
+bad_fork_cleanup_policy → lockdep_free_task(p); mpol_put(p->mempolicy)
+bad_fork_cleanup_delayacct → delayacct_tsk_free(p)
+bad_fork_cleanup_count  → dec_rlimit_ucounts(...); exit_creds(p)
+bad_fork_free           → WRITE_ONCE(p->__state, TASK_DEAD); put_task_stack(p); delayed_free_task(p)
+fork_out                → remove delayed.node from multiprocess list
+```
+
+---
+
+## exec Internals
+
+### `do_execveat_common()` Flow (`fs/exec.c:1873–1956`)
+
+Common entry point for all exec variants:
+
+```c
+static int do_execveat_common(int fd, struct filename *filename,
+                              struct user_arg_ptr argv,
+                              struct user_arg_ptr envp,
+                              int flags)
+```
+
+**Full sequence:**
+
+```
+1. RLIMIT_NPROC re-check if PF_NPROC_EXCEEDED set
+2. alloc_bprm(fd, filename, flags)
+     do_open_execat(fd, filename, flags)    ← opens file, denies write access
+     kzalloc(sizeof(*bprm), GFP_KERNEL)
+     bprm->file = file
+     bprm->filename = filename->name (or /dev/fd/N path for execveat)
+     bprm->interp = bprm->filename
+     bprm_mm_init(bprm)
+       mm_alloc()                           ← fresh mm_struct
+       __bprm_mm_init(bprm)
+         vm_area_alloc(mm)                  ← temporary stack VMA at STACK_TOP_MAX
+         insert_vm_struct(mm, vma)
+         bprm->p = vma->vm_end - sizeof(void *)
+3. count(argv, MAX_ARG_STRINGS)  → bprm->argc
+4. count(envp, MAX_ARG_STRINGS)  → bprm->envc
+5. bprm_stack_limits(bprm)       ← compute bprm->argmin from RLIMIT_STACK
+6. copy_string_kernel(bprm->filename, bprm)  ← push filename onto bprm stack
+   bprm->exec = bprm->p
+7. copy_strings(bprm->envc, envp, bprm)     ← push env strings
+8. copy_strings(bprm->argc, argv, bprm)     ← push arg strings
+9. bprm_execve(bprm)
+```
+
+### `bprm_execve()` (`fs/exec.c:1818–1871`)
+
+```
+prepare_bprm_creds(bprm)          ← allocate bprm->cred via prepare_exec_creds()
+check_unsafe_exec(bprm)           ← set bprm->unsafe (ptrace, shared fs, NO_NEW_PRIVS)
+current->in_execve = 1
+sched_exec()                      ← migrate to best CPU for exec
+security_bprm_creds_for_exec(bprm) ← LSM hook (sets secureexec)
+exec_binprm(bprm)                 ← loop up to 5 levels deep for interpreter chains
+  search_binary_handler(bprm)     ← walks formats list, calls fmt->load_binary(bprm)
+sched_mm_cid_after_execve(current)
+current->in_execve = 0
+```
+
+On `exec_binprm()` error with `bprm->point_of_no_return` set, forces `SIGSEGV` via `force_fatal_sig(SIGSEGV)`.
+
+### `search_binary_handler()` (`fs/exec.c:1726–1769`)
+
+```
+prepare_binprm(bprm)                         ← reads first BINPRM_BUF_SIZE bytes into bprm->buf
+security_bprm_check(bprm)                    ← LSM check hook
+read_lock(&binfmt_lock)
+list_for_each_entry(fmt, &formats, lh):
+    fmt->load_binary(bprm)                   ← tries each registered handler
+    if bprm->point_of_no_return || retval != -ENOEXEC: return retval
+read_unlock(&binfmt_lock)
+[if CONFIG_MODULES and -ENOEXEC: request_module("binfmt-%04x", magic) and retry once]
+```
+
+### `begin_new_exec()` — Point of No Return (`fs/exec.c:1216–1396`)
+
+Where `bprm->point_of_no_return = true` is set (line 1237). After this, errors cannot be returned to the calling userspace process:
+
+```
+bprm_creds_from_file(bprm)            ← compute suid/sgid from inode mode
+trace_sched_prepare_exec(current, bprm)
+bprm->point_of_no_return = true       ← *** POINT OF NO RETURN SET ***
+de_thread(me)                          ← kill all other threads in group; wait for them
+io_uring_task_cancel()
+unshare_files()                        ← ensure private fdtable
+set_mm_exe_file(bprm->mm, bprm->file) ← attach exe file to new mm
+exec_mmap(bprm->mm)                   ← install new mm (see below)
+bprm->mm = NULL
+exec_task_namespaces()
+posix_cpu_timers_exit(me); exit_itimers(me)
+unshare_sighand(me)                    ← get private sighand_struct
+me->flags &= ~(PF_RANDOMIZE | PF_FORKNOEXEC | PF_NOFREEZE | PF_NO_SETAFFINITY)
+flush_thread()                         ← arch-specific register state flush
+do_close_on_exec(me->files)           ← close FD_CLOEXEC descriptors
+__set_task_comm(me, kbasename(bprm->filename), true)
+flush_signal_handlers(me, 0)          ← reset all signal handlers to SIG_DFL
+commit_creds(bprm->cred)              ← install new credentials
+```
+
+### `exec_mmap()` — Replacing the Old MM (`fs/exec.c:962–1022`)
+
+```
+exec_mm_release(tsk, old_mm)                   ← notify futex, etc.
+down_write_killable(&tsk->signal->exec_update_lock)
+mmap_read_lock_killable(old_mm)                 ← if old_mm exists
+task_lock(tsk)
+  local_irq_disable()
+  tsk->active_mm = mm
+  tsk->mm = mm                                  ← install new mm atomically
+  mm_init_cid(mm, tsk)
+  local_irq_enable()
+  activate_mm(active_mm, mm)                    ← arch TLB switch
+task_unlock(tsk)
+mmap_read_unlock(old_mm)
+mmput(old_mm)                                   ← drop reference to old mm
+```
+
+The `exec_update_lock` (`signal->exec_update_lock`, a `rw_semaphore`) is held write-locked across the mm swap so ptrace and credential readers see a consistent view.
+
+### `struct linux_binprm` Key Fields (`include/linux/binfmts.h:18–65`)
+
+```c
+struct linux_binprm {
+    struct vm_area_struct *vma;      /* temporary argument stack VMA */
+    unsigned long vma_pages;
+    unsigned long argmin;            /* rlimit marker for copy_strings() */
+    struct mm_struct *mm;            /* new mm being constructed */
+    unsigned long p;                 /* current top of argument stack */
+    unsigned int have_execfd:1;      /* execveat with fd to pass to interpreter */
+    unsigned int execfd_creds:1;     /* use creds of script (binfmt_misc) */
+    unsigned int secureexec:1;       /* privilege-gaining exec (sets AT_SECURE) */
+    unsigned int point_of_no_return:1; /* errors can no longer return to userspace */
+    struct file *executable;         /* executable file for interpreter pass-through */
+    struct file *interpreter;        /* interpreter file (scripts, binfmt_misc) */
+    struct file *file;               /* file being executed */
+    struct cred *cred;               /* new credentials under construction */
+    int unsafe;                      /* LSM_UNSAFE_* mask */
+    unsigned int per_clear;          /* personality bits to clear */
+    int argc, envc;                  /* argument and environment counts */
+    const char *filename;            /* name as seen by /proc */
+    const char *interp;              /* name of binary actually executed */
+    const char *fdpath;              /* generated name for execveat fd case */
+    unsigned interp_flags;           /* BINPRM_FLAGS_* */
+    int execfd;                      /* fd for AT_EXECFD aux vector entry */
+    unsigned long loader, exec;      /* stack positions of loader/executable paths */
+    struct rlimit rlim_stack;        /* saved RLIMIT_STACK for exec */
+    char buf[BINPRM_BUF_SIZE];       /* first bytes of file (magic number buffer) */
+};
+```
+
+### `struct linux_binfmt` (`include/linux/binfmts.h:82–91`)
+
+```c
+struct linux_binfmt {
+    struct list_head lh;                      /* linked into global formats list */
+    struct module *module;
+    int (*load_binary)(struct linux_binprm *); /* load and execute a binary */
+    int (*load_shlib)(struct file *);          /* load a shared library */
+    int (*core_dump)(struct coredump_params *cprm); /* generate core dump */
+    unsigned long min_coredump;               /* minimum dump size */
+};
+```
+
+Handlers are registered via `register_binfmt()` / `insert_binfmt()` and protected by the `binfmt_lock` rwlock.
+
+### ELF Loading: `load_elf_binary()` Key Steps (`fs/binfmt_elf.c:825`)
+
+```
+1. Verify ELF magic: memcmp(elf_ex->e_ident, ELFMAG, SELFMAG)
+2. Check e_type == ET_EXEC or ET_DYN; check arch
+3. load_elf_phdrs()                     ← read all program headers
+4. Scan PT_INTERP segment → open_exec(interpreter_path)
+5. Check PT_GNU_STACK → set executable_stack flag
+6. arch_check_elf() → last chance to reject before point of no return
+7. begin_new_exec(bprm)                 ← POINT OF NO RETURN
+8. SET_PERSONALITY2(*elf_ex, &arch_state)
+9. setup_new_exec(bprm)                 ← set task name, update mm flags
+10. setup_arg_pages(bprm, STACK_TOP, executable_stack) ← finalize stack VMA
+11. Loop over PT_LOAD segments:
+    elf_load(bprm->file, load_bias + vaddr, elf_ppnt, prot, flags, total_size)
+    → elf_map() → vm_mmap() with file-backed mapping
+    Track start_code, end_code, start_data, end_data, elf_brk
+12. current->mm->start_brk = current->mm->brk = ELF_PAGEALIGN(elf_brk)
+13. If interpreter:
+    load_elf_interp()                   ← map ld.so segments; elf_entry = interp entry
+    Else: elf_entry = e_entry + load_bias
+14. create_elf_tables()                 ← push aux vector, argv ptrs, envp ptrs to stack
+15. START_THREAD(regs, elf_entry, bprm->p)  ← set PC and SP in pt_regs → return to user
+```
+
+---
+
+## Signal Delivery Internals
+
+### Data Structures (`include/linux/signal_types.h`)
+
+```c
+/* A queued signal instance — SLAB allocated from sigqueue_cachep */
+struct sigqueue {
+    struct list_head list;      /* links into sigpending.list */
+    int flags;                  /* SIGQUEUE_PREALLOC */
+    kernel_siginfo_t info;      /* full siginfo payload */
+    struct ucounts *ucounts;    /* for RLIMIT_SIGPENDING accounting */
+};
+
+/* Per-task or per-group pending signal set */
+struct sigpending {
+    struct list_head list;   /* list of struct sigqueue nodes */
+    sigset_t signal;         /* bitmap: which signals are pending (any count) */
+};
+```
+
+Each `task_struct` has `task->pending` (thread-private) and the shared `task->signal->shared_pending`. The `sigset_t` bitmap is the fast-path "any pending?" check; the linked `list` holds full `siginfo` payloads.
+
+### `struct sighand_struct` (`include/linux/sched/signal.h:21–26`)
+
+```c
+struct sighand_struct {
+    spinlock_t          siglock;           /* protects action[], pending queues */
+    refcount_t          count;             /* shared among CLONE_SIGHAND tasks */
+    wait_queue_head_t   signalfd_wqh;      /* signalfd waiters */
+    struct k_sigaction  action[_NSIG];     /* per-signal disposition table */
+};
+```
+
+### Standard vs RT Signal Queuing
+
+| Aspect | Standard signals (1–31) | Real-time signals (32–64) |
+|---|---|---|
+| Bitmap tracking | `sigset_t signal` bit set | `sigset_t signal` bit set |
+| Queue semantics | At most one queued (coalesced) via `legacy_queue()` check | Multiple instances queued in `sigqueue.list` |
+| `legacy_queue()` check | If bit already set in bitmap, skip `sigqueue_alloc` | No coalescing, always allocate `sigqueue` |
+| `override_rlimit` | Kernel-generated signals (si_code >= 0) bypass limit | Never bypass limit |
+| SIGKILL / kthread | Skip `sigqueue_alloc` entirely (`goto out_set`) | N/A |
+
+### `__send_signal_locked()` Flow (`kernel/signal.c:1041–1156`)
+
+Requires `t->sighand->siglock` held.
+
+```
+1. prepare_signal(sig, t, force)
+     → checks ignored, SIGNAL_UNKILLABLE, etc.
+     → if false: goto ret (TRACE_SIGNAL_IGNORED)
+
+2. pending = (type != PIDTYPE_PID) ? &t->signal->shared_pending
+                                    : &t->pending
+
+3. if legacy_queue(pending, sig):     ← sig < SIGRTMIN && bit already set
+     goto ret (TRACE_SIGNAL_ALREADY_PENDING)
+
+4. if (sig == SIGKILL) || PF_KTHREAD: goto out_set  ← skip sigqueue alloc
+
+5. override_rlimit = (sig < SIGRTMIN) && (is_si_special(info) || si_code >= 0)
+   sigqueue_alloc(sig, t, GFP_ATOMIC, override_rlimit)
+   if q:
+     list_add_tail(&q->list, &pending->list)
+     fill q->info from info parameter
+   elif RT signal from user and queue overflow: return -EAGAIN
+
+out_set:
+6. signalfd_notify(t, sig)
+7. sigaddset(&pending->signal, sig)    ← set the bitmap bit
+8. complete_signal(sig, t, type)       ← find a thread to wake
+```
+
+### `complete_signal()` (`kernel/signal.c:962–1034`)
+
+Finds a thread that can take the signal and wakes it:
+
+```
+1. if wants_signal(sig, p):  t = p   ← suggested thread can handle it
+2. elif type == PIDTYPE_PID || thread_group_empty: return
+3. else: walk thread group starting at signal->curr_target:
+     while !wants_signal(sig, t): t = next_thread(t)
+     signal->curr_target = t          ← remember last target for next time
+
+4. if sig_fatal(p, sig) && !core_dump_pending && !GROUP_EXIT && !blocked && !ptrace:
+     if !sig_kernel_coredump(sig):
+       /* Fast-path whole-group kill */
+       signal->flags = SIGNAL_GROUP_EXIT
+       signal->group_exit_code = sig
+       for_each_thread:
+         sigaddset(&t->pending.signal, SIGKILL)
+         signal_wake_up(t, 1)         ← wake all with TIF_SIGPENDING
+       return
+5. signal_wake_up(t, sig == SIGKILL)  ← set TIF_SIGPENDING, kick scheduler
+```
+
+### `get_signal()` — Dequeuing on Return to Userspace (`kernel/signal.c:2801–3047`)
+
+Called from `exit_to_user_mode_loop()` on each return to userspace when `TIF_SIGPENDING` is set.
+
+```
+spin_lock_irq(&sighand->siglock)
+relock:
+  if SIGNAL_CLD_MASK: handle stop/continue notification → goto relock
+  loop:
+    if SIGNAL_GROUP_EXIT || group_exec_task: signr = SIGKILL → goto fatal
+    if JOBCTL_STOP_PENDING: do_signal_stop() → goto relock
+    signr = dequeue_synchronous_signal()  ← fault-generated first
+    if !signr: signr = dequeue_signal(&current->blocked, &ksig->info, &type)
+    if !signr: break (return false)
+    if ptrace && !SA_IMMUTABLE: ptrace_signal()  ← ptrace interception
+    ka = &sighand->action[signr-1]
+    if ka->sa_handler == SIG_IGN: continue
+    if ka->sa_handler != SIG_DFL:
+      ksig->ka = *ka
+      if SA_ONESHOT: ka->sa_handler = SIG_DFL
+      break (return true → handle in userspace)
+    /* Default action */
+    if sig_kernel_ignore(signr): continue
+    if sig_kernel_stop(signr): do_signal_stop() → goto relock
+  fatal:
+    spin_unlock_irq(...)
+    current->flags |= PF_SIGNALED
+    if sig_kernel_coredump(signr): do_coredump(&ksig->info)
+    do_group_exit(signr)              ← calls do_exit(), never returns
+```
+
+### Signal Frame Setup (x86)
+
+After `get_signal()` returns true with a user handler, the arch calls `handle_signal()` → `setup_rt_frame()` (`arch/x86/kernel/signal.c`):
+1. Builds a `struct rt_sigframe` on the user stack containing `siginfo`, `ucontext` (saved registers), and restorer trampoline address
+2. Sets the task's PC to `ka->sa.sa_handler`
+3. Sets the task's SP to the new frame
+
+On handler return, the restorer calls `rt_sigreturn` syscall → `sys_rt_sigreturn()` → restores `ucontext` → `RESTORE_SAVED_SIGMASK`.
+
+### `sigaction` Flag Semantics
+
+| Flag | Effect |
+|---|---|
+| `SA_RESTART` | Interrupted syscalls restart automatically instead of returning `-EINTR` |
+| `SA_SIGINFO` | Handler receives `siginfo_t *` and `ucontext_t *` (three-argument form) |
+| `SA_NODEFER` | Signal not blocked during its own handler (no automatic self-masking) |
+| `SA_RESETHAND` (`SA_ONESHOT`) | Reset to `SIG_DFL` after first delivery |
+| `SA_NOCLDWAIT` | No zombie children; `do_notify_parent()` auto-reaps |
+| `SA_NOCLDSTOP` | `SIGCHLD` not sent for child stop/continue events |
+| `SA_ONSTACK` | Deliver on alternate signal stack (`task->sas_ss_sp`) |
+| `SA_IMMUTABLE` | Handler cannot be intercepted by ptrace |
+
+---
+
+## Process Exit Path
+
+### `do_exit()` (`kernel/exit.c:876–990`)
+
+```c
+void __noreturn do_exit(long code)
+```
+
+Full sequence:
+
+```
+synchronize_group_exit(tsk, code)
+  spin_lock_irq(&sighand->siglock)
+    signal->quick_threads--
+    if (quick_threads == 0) && !SIGNAL_GROUP_EXIT:
+      signal->flags = SIGNAL_GROUP_EXIT
+      signal->group_exit_code = code
+  spin_unlock_irq(...)
+
+kcov_task_exit(tsk)
+coredump_task_exit(tsk)            ← sync with ongoing coredump
+ptrace_event(PTRACE_EVENT_EXIT, code)
+io_uring_files_cancel()
+exit_signals(tsk)                  ← sets PF_EXITING; wakes threads blocked on signal
+acct_update_integrals(tsk)
+
+group_dead = atomic_dec_and_test(&tsk->signal->live)
+  if group_dead:
+    hrtimer_cancel(&signal->real_timer)
+    exit_itimers(tsk)
+
+tsk->exit_code = code
+taskstats_exit(tsk, group_dead)
+
+exit_mm()                          ← mmput(tsk->mm); sets tsk->mm = NULL
+if group_dead: acct_process()
+
+exit_sem(tsk)                      ← SysV semaphore undo
+exit_shm(tsk)                      ← SysV shared memory
+exit_files(tsk)                    ← drop reference to files_struct
+exit_fs(tsk)                       ← drop reference to fs_struct
+if group_dead: disassociate_ctty(1) ← release controlling terminal
+exit_task_namespaces(tsk)          ← put_nsproxy()
+exit_task_work(tsk)                ← flush pending task_work
+exit_thread(tsk)                   ← arch-specific (e.g., FPU state)
+perf_event_exit_task(tsk)
+cgroup_exit(tsk)
+
+exit_tasks_rcu_start()
+exit_notify(tsk, group_dead)       ← zombie transition, notify parent
+proc_exit_connector(tsk)
+
+exit_rcu()
+exit_tasks_rcu_finish()
+do_task_dead()                     ← set TASK_DEAD, schedule away forever
+```
+
+### `exit_notify()` — Zombie Transition (`kernel/exit.c:730–777`)
+
+```
+write_lock_irq(&tasklist_lock)
+  forget_original_parent(tsk, &dead)   ← reparent children to subreaper/init
+  if group_dead: kill_orphaned_pgrp()  ← SIGHUP+SIGCONT to orphaned stopped pgrps
+
+  tsk->exit_state = EXIT_ZOMBIE        ← visible as zombie from this point
+
+  if tsk->ptrace:
+    autoreap = do_notify_parent(tsk, SIGCHLD or exit_signal)
+  elif thread_group_leader(tsk):
+    autoreap = thread_group_empty(tsk) && do_notify_parent(tsk, tsk->exit_signal)
+  else:
+    autoreap = true                     ← non-leader thread: always autoreap
+
+  if autoreap:
+    tsk->exit_state = EXIT_DEAD         ← skip zombie state; straight to dead
+    list_add(&tsk->ptrace_entry, &dead)
+
+write_unlock_irq(&tasklist_lock)
+
+list_for_each_entry_safe(p, n, &dead, ptrace_entry):
+  release_task(p)                       ← for autoreap cases
+```
+
+### `release_task()` (`kernel/exit.c:240–287`)
+
+Called when the task can be fully freed (from `exit_notify()` auto-reap or `wait4()` by parent):
+
+```
+write_lock_irq(&tasklist_lock)
+  ptrace_release_task(p)
+  __exit_signal(p):
+    spin_lock(&sighand->siglock)
+      posix_cpu_timers_exit(tsk)
+      task_cputime() → accumulate into sig->utime/stime/gtime
+      __unhash_process(p, group_dead):
+        nr_threads--
+        detach_pid(p, PIDTYPE_PID)
+        if group_dead: detach_pid(TGID/PGID/SID); list_del_rcu(&p->tasks)
+        list_del_rcu(&p->thread_node)
+      flush_sigqueue(&tsk->pending)
+      tsk->sighand = NULL
+    spin_unlock(&sighand->siglock)
+    __cleanup_sighand(sighand)    ← decref; free if last
+write_unlock_irq(&tasklist_lock)
+proc_flush_pid(thread_pid)
+put_pid(thread_pid)               ← free struct pid when refcount hits 0
+put_task_struct_rcu_user(p)       ← dec rcu_users; call_rcu(delayed_put_task_struct)
+```
+
+`delayed_put_task_struct()` runs in RCU callback context: calls `put_task_struct()` → `__put_task_struct()` → `security_task_free()`, `exit_creds()`, `free_task()`.
+
+### `do_task_dead()` (`kernel/sched/core.c:6772–6786`)
+
+```c
+void __noreturn do_task_dead(void)
+{
+    set_special_state(TASK_DEAD);       /* sets current->__state atomically */
+    current->flags |= PF_NOFREEZE;
+    __schedule(SM_NONE);                /* context switch; never returns */
+    BUG();
+}
+```
+
+The task is removed from the run queue in `__schedule()`. `finish_task_switch()` calls `put_task_struct()` on the dead task, dropping the scheduler's reference.
+
+### Thread Group Exit: `zap_other_threads()` (`kernel/signal.c:1336–1355`)
+
+Called from `do_group_exit()` (under `sighand->siglock`) and from `de_thread()` during exec:
+
+```
+p->signal->group_stop_count = 0
+for_other_threads(p, t):
+  task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK)
+  if t->exit_state: continue          ← already dead
+  sigaddset(&t->pending.signal, SIGKILL)
+  signal_wake_up(t, 1)               ← set TIF_SIGPENDING, kick off CPU
+```
+
+---
+
+## Locking Summary
+
+| Lock Name | Type | Protects | Key File(s) |
+|---|---|---|---|
+| `task->alloc_lock` (`task_lock()`) | `spinlock_t` | `task->mm`, `task->files`, `task->fs`, `task->nsproxy`, `task->signal->rlim` (group leader) | `include/linux/sched.h` |
+| `sighand->siglock` | `spinlock_t` (irq-disabling) | `sighand->action[]`, all `sigpending` queues, `signal->flags`, thread-group stop state | `include/linux/sched/signal.h:22` |
+| `tasklist_lock` | `rwlock_t` | Process/thread list linkage (`task->tasks`, `children`, `sibling`, `thread_node`), PID hash tables, parent/child relationships, `exit_state` transitions | `include/linux/sched/task.h:55` |
+| `signal->cred_guard_mutex` | `mutex` | Credential calculation consistency during exec and ptrace attach | `include/linux/sched/signal.h:239` |
+| `signal->exec_update_lock` | `rw_semaphore` | Task credential/mm consistency during exec; write-locked in `exec_mmap()` | `include/linux/sched/signal.h:245` |
+| `mm->mmap_lock` | `rw_semaphore` | All VMA tree modifications and most mm field writes; readers for page faults | `include/linux/mm_types.h` |
+| `files->file_lock` | `spinlock_t` | `files->fdt`, `files->next_fd`, open/close-on-exec bitmaps, `fdtable->fd[]` resizing | `include/linux/fdtable.h:51` |
+| `fs->lock` | `spinlock_t` + `seqcount_spinlock_t seq` | `fs->root`, `fs->pwd`, `fs->umask`, `fs->in_exec` | `include/linux/fs_struct.h:9–15` |
+| `pid->lock` | `spinlock_t` | `pid->tasks[]` hash lists, `pid->inodes`; used during `attach_pid()` / `detach_pid()` | `include/linux/pid.h:59` |
+| `cgroup_threadgroup_rwsem` | `percpu_rw_semaphore` | Thread group membership changes vs cgroup migration | `kernel/cgroup/cgroup.c:114` |
+| `cgroup_mutex` | `mutex` | cgroup hierarchy structure, css attachment, task migration | `kernel/cgroup/cgroup.c` |
+| `binfmt_lock` | `rwlock_t` | `formats` list of registered `linux_binfmt` handlers | `fs/exec.c:86` |
+| `signal->stats_lock` | `seqlock_t` | Thread group CPU time accumulators (`sig->utime`, `sig->stime`) | `include/linux/sched/signal.h:187` |
+| RCU (read-side) | RCU | `task->cred` (via `rcu_assign_pointer` / `rcu_dereference`), `task->sighand`, `task->files` for `fget_light` | various |
+
+---
+
+## Source File Reference
+
+| File | Purpose | Key Functions |
+|---|---|---|
+| `kernel/fork.c` | Process/thread creation; mm/fd/cred duplication | `copy_process()`, `dup_task_struct()`, `kernel_clone()`, `copy_mm()`, `copy_files()`, `copy_fs()`, `copy_sighand()`, `copy_signal()`, `copy_namespaces()`, `copy_thread()` |
+| `kernel/exit.c` | Process exit, zombie management, wait | `do_exit()`, `exit_notify()`, `release_task()`, `do_group_exit()`, `__exit_signal()`, `__unhash_process()` |
+| `kernel/signal.c` | Signal sending, delivery, queuing, job control | `__send_signal_locked()`, `complete_signal()`, `get_signal()`, `do_notify_parent()`, `zap_other_threads()` |
+| `kernel/pid.c` | PID allocation, struct pid lifecycle, pidfd | `alloc_pid()`, `free_pid()`, `attach_pid()`, `detach_pid()`, `find_pid_ns()`, `pid_task()` |
+| `kernel/cred.c` | Credential lifecycle, COW credentials | `copy_creds()`, `prepare_creds()`, `prepare_exec_creds()`, `commit_creds()`, `abort_creds()` |
+| `kernel/nsproxy.c` | Namespace proxy lifecycle | `copy_namespaces()`, `unshare_nsproxy_namespaces()`, `put_nsproxy()` |
+| `kernel/sched/core.c` | Scheduler core; task dead path | `do_task_dead()`, `sched_fork()`, `finish_task_switch()`, `schedule()` |
+| `fs/exec.c` | Binary execution, bprm lifecycle, mm replacement | `do_execveat_common()`, `bprm_execve()`, `search_binary_handler()`, `begin_new_exec()`, `exec_mmap()`, `de_thread()` |
+| `fs/binfmt_elf.c` | ELF binary loader | `load_elf_binary()`, `load_elf_interp()`, `load_elf_phdrs()`, `create_elf_tables()` |
+| `fs/file.c` | File descriptor table management | `alloc_fd()`, `__close_fd()`, `copy_files()`, `unshare_files()`, `do_close_on_exec()` |
+| `include/linux/sched.h` | `struct task_struct` definition | All `task_struct` fields, task state constants |
+| `include/linux/sched/task.h` | Fork/exit interfaces; `struct kernel_clone_args` | `kernel_clone_args`, `tasklist_lock`, `copy_thread()`, `release_task()` |
+| `include/linux/sched/signal.h` | `struct signal_struct`, `struct sighand_struct` | `signal_struct`, `sighand_struct`, signal delivery helpers |
+| `include/linux/pid.h` | `struct pid`, `struct upid`, PID API | `struct pid`, `alloc_pid()`, `find_pid_ns()` |
+| `include/linux/cred.h` | `struct cred`, credential API | `struct cred`, `prepare_creds()`, `commit_creds()` |
+| `include/linux/binfmts.h` | `struct linux_binprm`, `struct linux_binfmt` | `linux_binprm`, `linux_binfmt`, `register_binfmt()` |
+| `include/linux/signal_types.h` | `struct sigqueue`, `struct sigpending` | `sigqueue`, `sigpending`, `k_sigaction` |
+| `include/linux/fdtable.h` | `struct files_struct`, `struct fdtable` | `files_struct`, `fdtable`, `files_lookup_fd_raw()` |
 
