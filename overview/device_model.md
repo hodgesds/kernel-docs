@@ -1265,6 +1265,364 @@ static int my_probe(struct platform_device *pdev)
 
 ---
 
+## Internal Structures
+
+### struct subsys_private
+
+The subsys_private structure is the internal bookkeeping for both bus_type and
+class. It holds the kset, device/driver lists, and the subsystem mutex. This
+structure is not visible to drivers — it is declared in `drivers/base/base.h`
+and accessed by the driver core through helpers like `bus_to_subsys()`.
+
+```c
+/* drivers/base/base.h */
+struct subsys_private {
+    struct kset subsys;             /* Sysfs kset for this subsystem */
+    struct kset *devices_kset;      /* Kset for /sys/bus/<name>/devices */
+    struct list_head interfaces;    /* Subsystem interfaces */
+    struct mutex mutex;             /* Protects interfaces and device list */
+
+    struct kset *drivers_kset;      /* Kset for /sys/bus/<name>/drivers */
+    struct klist klist_devices;     /* List of all devices on bus */
+    struct klist klist_drivers;     /* List of all drivers on bus */
+    struct blocking_notifier_head bus_notifier;
+    unsigned int drivers_autoprobe:1;
+    const struct bus_type *bus;     /* Back-pointer to bus_type */
+    const struct class *class;      /* Back-pointer to class */
+
+    struct list_head glue_dirs;
+    struct class_interface *class_interface;
+    struct lock_class_key lock_key;
+};
+```
+
+### struct device_private
+
+Per-device private data for the driver core, not visible to drivers:
+
+```c
+/* drivers/base/base.h */
+struct device_private {
+    struct klist_node knode_class;       /* Node in class device list */
+    struct klist_node knode_driver;      /* Node in driver device list */
+    struct klist_node knode_bus;         /* Node in bus device list */
+    struct klist_node knode_parent;      /* Node in parent device list */
+    struct list_head deferred_probe;     /* Deferred probe list entry */
+    const char *deferred_probe_reason;  /* Why probe was deferred */
+    struct device_driver *async_driver; /* Driver currently probing async */
+    char *deferred_probe_reason;
+    struct device *device;              /* Back-pointer to struct device */
+    u8 dead:1;
+};
+```
+
+### struct driver_private
+
+```c
+/* drivers/base/base.h */
+struct driver_private {
+    struct kobject kobj;                /* Sysfs representation */
+    struct klist klist_devices;         /* Devices bound to this driver */
+    struct klist_node knode_bus;        /* Node in bus driver list */
+    struct module_kobject *mkobj;       /* Module kobject */
+    struct device_driver *driver;       /* Back-pointer */
+};
+```
+
+---
+
+## Device Links
+
+Device links express supplier-consumer relationships between devices,
+influencing probe ordering, power management, and device removal. A supplier
+must be available before its consumer can probe, and the consumer must suspend
+before its supplier during PM transitions.
+
+### struct device_link
+
+```c
+/* include/linux/device.h */
+struct device_link {
+    struct device *supplier;            /* Supplier device */
+    struct list_head s_node;            /* Node in supplier's consumer list */
+    struct device *consumer;            /* Consumer device */
+    struct list_head c_node;            /* Node in consumer's supplier list */
+    struct device link_dev;             /* For sysfs representation */
+    enum device_link_state status;      /* Current state */
+    u32 flags;                          /* DL_FLAG_* */
+    refcount_t rpm_active;              /* Runtime PM active count */
+    struct kref kref;                   /* Reference count */
+    struct rcu_head rcu;
+    bool supplier_preactivated;
+};
+```
+
+### Device Link Flags
+
+```c
+#define DL_FLAG_STATELESS       BIT(0)  /* No state tracking */
+#define DL_FLAG_AUTOREMOVE_CONSUMER BIT(1)  /* Remove when consumer unbinds */
+#define DL_FLAG_PM_RUNTIME      BIT(2)  /* PM runtime integration */
+#define DL_FLAG_RPM_ACTIVE      BIT(3)  /* Activate supplier for probe */
+#define DL_FLAG_AUTOREMOVE_SUPPLIER BIT(4)  /* Remove when supplier unbinds */
+#define DL_FLAG_AUTOPROBE_CONSUMER BIT(5)  /* Probe consumer when supplier ready */
+#define DL_FLAG_MANAGED         BIT(6)  /* Managed by driver core */
+#define DL_FLAG_SYNC_STATE_ONLY BIT(7)  /* Only for sync_state */
+#define DL_FLAG_INFERRED        BIT(8)  /* Inferred from firmware */
+#define DL_FLAG_CYCLE           BIT(9)  /* Part of a cycle */
+```
+
+### Device Link States
+
+```
+DL_STATE_NONE → DL_STATE_AVAILABLE → DL_STATE_CONSUMER_PROBE → DL_STATE_ACTIVE
+                                                                     ↓
+                                                      DL_STATE_SUPPLIER_UNBIND
+```
+
+---
+
+## Driver Probe Path
+
+### Detailed Probe Call Chain
+
+```
+device_add(dev)
+    │
+    └─── bus_probe_device(dev)
+              │
+              ├── Check sp->drivers_autoprobe
+              │
+              └── device_initial_probe(dev)
+                      │
+                      └── __device_attach(dev, true)
+                              │
+                              ├── device_lock(dev)   /* dev->mutex */
+                              ├── For each driver on bus:
+                              │       __device_attach_driver(drv, dev)
+                              │           │
+                              │           ├── driver_match_device(drv, dev)
+                              │           │       └── bus->match(dev, drv)
+                              │           │
+                              │           └── driver_probe_device(drv, dev)
+                              │                   │
+                              │                   └── __driver_probe_device(drv, dev)
+                              │                           │
+                              │                           └── really_probe(dev, drv)
+                              │
+                              └── device_unlock(dev)
+```
+
+### really_probe() Internals
+
+```c
+/* drivers/base/dd.c */
+static int really_probe(struct device *dev, struct device_driver *drv)
+{
+    /* 1. Call driver_sysfs_add() - create sysfs links */
+
+    /* 2. Call pinctrl_bind_pins() - set up pin control */
+
+    /* 3. Call dma_configure() - configure DMA */
+
+    /* 4. Open devres group for probe cleanup tracking */
+    devres_open_group(dev, NULL, GFP_KERNEL);
+
+    /* 5. pm_runtime_get_suppliers() - activate suppliers */
+
+    /* 6. Call bus->probe() or drv->probe() */
+    if (dev->bus->probe)
+        ret = dev->bus->probe(dev);
+    else if (drv->probe)
+        ret = drv->probe(dev);
+
+    /* 7. On success: close devres group, call driver_bound() */
+    devres_close_group(dev, NULL);
+    driver_bound(dev);  /* sends KOBJ_BIND uevent */
+
+    /* 8. On failure: release devres group (cleans up everything) */
+    devres_release_group(dev, NULL);
+
+    /* 9. On -EPROBE_DEFER: add to deferred probe list */
+    driver_deferred_probe_add(dev);
+}
+```
+
+### Deferred Probe Mechanism
+
+When a driver's probe returns `-EPROBE_DEFER`, the device is added to a
+pending list. When any device finishes probing successfully, the deferred
+probe workqueue re-attempts all pending devices:
+
+```
+driver_deferred_probe_add(dev)
+    │
+    └── Add to deferred_probe_pending_list
+        (protected by deferred_probe_mutex)
+
+driver_bound(dev)   /* some other device probed */
+    │
+    └── driver_deferred_probe_trigger()
+            │
+            ├── Move all from pending to active list
+            └── Schedule deferred_probe_work
+
+deferred_probe_work_func()
+    │
+    └── For each device on active list:
+            bus_probe_device(dev)
+```
+
+### Async Probe
+
+When `probe_type = PROBE_PREFER_ASYNCHRONOUS`, the probe is scheduled via
+`async_schedule_domain()` instead of running synchronously:
+
+```c
+/* Probe types */
+enum probe_type {
+    PROBE_DEFAULT_STRATEGY,
+    PROBE_PREFER_ASYNCHRONOUS,
+    PROBE_FORCE_SYNCHRONOUS,
+};
+```
+
+`wait_for_device_probe()` blocks until all async probes and deferred probes
+have completed.
+
+---
+
+## Uevent Mechanism
+
+Uevents notify userspace (udev/systemd) about device state changes.
+
+### Uevent Flow
+
+```
+kobject_uevent(kobj, KOBJ_ADD)
+    │
+    └── kobject_uevent_env(kobj, KOBJ_ADD, NULL)
+            │
+            ├── Build environment variables:
+            │   ├── ACTION=add
+            │   ├── DEVPATH=/devices/pci0000:00/...
+            │   ├── SUBSYSTEM=pci
+            │   ├── SEQNUM=<monotonic counter>
+            │   └── <bus/driver-specific via kset->uevent_ops->uevent()>
+            │
+            ├── Netlink broadcast:
+            │   └── NETLINK_KOBJECT_UEVENT (socket family 15)
+            │       via netlink_broadcast_filtered()
+            │
+            └── Uevent helper fallback:
+                └── call_usermodehelper(uevent_helper, ...)
+                    (legacy /sbin/hotplug, usually disabled)
+```
+
+### Uevent Environment
+
+```c
+/* lib/kobject_uevent.c */
+struct kobj_uevent_env {
+    char *argv[3];
+    char *envp[UEVENT_NUM_ENVP];    /* Max 64 env vars */
+    int envp_idx;
+    char buf[UEVENT_BUFFER_SIZE];   /* Max 2048 bytes */
+    int buflen;
+};
+
+/* Add environment variable */
+int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...);
+```
+
+### Kset Uevent Operations
+
+```c
+/* Customize uevent behavior per kset */
+struct kset_uevent_ops {
+    int (*filter)(const struct kobject *kobj);        /* Suppress uevent? */
+    const char *(*name)(const struct kobject *kobj);  /* Override SUBSYSTEM */
+    int (*uevent)(const struct kobject *kobj,         /* Add env vars */
+                  struct kobj_uevent_env *env);
+};
+```
+
+---
+
+## Locking Summary
+
+| Lock | Type | Purpose |
+|------|------|---------|
+| `dev->mutex` | mutex | Protects probe/remove, driver binding, devres list |
+| `device_links_lock` | mutex | Structural changes to device_link objects |
+| `device_links_srcu` | SRCU | Scalable read-side access to device links |
+| `dpm_list_mtx` | mutex | PM device lists (dpm_list, dpm_suspended_list, etc.) |
+| `deferred_probe_mutex` | mutex | Deferred probe pending/active lists |
+| `sp->mutex` | mutex | subsys_private interfaces list |
+| `kset->list_lock` | spinlock | Kobjects belonging to a kset |
+| `klist::k_lock` | spinlock | Internal klist iteration/modification |
+| `dev->devres_lock` | spinlock | Per-device devres_head list |
+| `fwnode_link_lock` | mutex | Firmware node supplier/consumer links |
+| `uevent_sock_mutex` | mutex | Per-netns uevent socket list |
+| `sb_lock` (global) | spinlock | super_blocks list, s_count |
+
+**Locking ordering**: Never acquire `dev->mutex` while holding `dpm_list_mtx`.
+The klist internal spinlocks are leaf locks and should not be held while
+acquiring any of the above mutexes.
+
+---
+
+## Source Files
+
+### Core Implementation (`drivers/base/`)
+
+| File | Description |
+|------|-------------|
+| `core.c` | `device_register()`, `device_add()`, `device_del()`, `device_link_add()`, uevent dispatch, `device_links_lock`/SRCU |
+| `dd.c` | Driver-device binding: `really_probe()`, `__driver_probe_device()`, deferred probe, async probe, `driver_bound()` |
+| `bus.c` | Bus registration: `bus_register()`, `bus_to_subsys()`, `bus_probe_device()`, `bus_add_device()` |
+| `driver.c` | `driver_register()`, `driver_unregister()`, `driver_find()` |
+| `platform.c` | Platform bus: `platform_device_register()`, `platform_driver_register()`, `platform_get_resource()` |
+| `class.c` | Class registration: `class_register()`, `class_unregister()`, `class_dev_iter_*()` |
+| `devres.c` | Managed resources: `devres_alloc()`, `devres_add()`, `devres_release_all()`, group open/close |
+| `base.h` | Internal header: `subsys_private`, `device_private`, `driver_private` definitions |
+| `init.c` | `driver_init()` boot sequence: `devices_init()`, `buses_init()`, `classes_init()`, `platform_bus_init()` |
+| `power/main.c` | PM device lists, `dpm_list_mtx`, `dpm_suspend()`, `dpm_resume()` |
+| `power/runtime.c` | Runtime PM state machine |
+
+### Header Files
+
+| File | Description |
+|------|-------------|
+| `include/linux/device.h` | `struct device`, `struct device_link`, `DL_FLAG_*`, devres APIs |
+| `include/linux/device/bus.h` | `struct bus_type`, `bus_for_each_dev()`, `bus_find_device()` |
+| `include/linux/device/class.h` | `struct class`, `class_register()`, `class_find_device()` |
+| `include/linux/device/driver.h` | `struct device_driver`, `driver_register()`, `wait_for_device_probe()` |
+| `include/linux/kobject.h` | `struct kobject`, `struct kset`, `struct kobj_type`, uevent API |
+| `include/linux/sysfs.h` | `struct attribute`, `struct attribute_group`, sysfs file/link/group APIs |
+
+### Kobject and Uevent
+
+| File | Description |
+|------|-------------|
+| `lib/kobject.c` | `kobject_init()`, `kobject_add()`, `kobject_del()`, `kobject_get_path()` |
+| `lib/kobject_uevent.c` | `kobject_uevent_env()`, netlink broadcast, uevent helper, `uevent_seqnum` |
+
+### Sysfs and Kernfs
+
+| File | Description |
+|------|-------------|
+| `fs/sysfs/mount.c` | Registers `sysfs` filesystem type, creates kernfs_root |
+| `fs/sysfs/file.c` | Attribute I/O: maps read/write to `sysfs_ops->show()`/`store()` |
+| `fs/sysfs/dir.c` | `sysfs_create_dir_ns()`, `sysfs_remove_dir()` |
+| `fs/sysfs/symlink.c` | `sysfs_create_link()`, `sysfs_remove_link()` |
+| `fs/sysfs/group.c` | `sysfs_create_group()`, `sysfs_remove_group()` |
+| `fs/kernfs/mount.c` | `kernfs_create_root()`, `kernfs_mount()`, global `kernfs_node_cache` slab |
+| `fs/kernfs/dir.c` | kernfs_node creation/lookup/removal, per-root rwsem for mutations |
+| `fs/kernfs/file.c` | File I/O with active reference counting for safe concurrent removal |
+
+---
+
 ## Summary
 
 The Linux Device Model provides a comprehensive framework for device management:
@@ -1281,10 +1639,13 @@ The Linux Device Model provides a comprehensive framework for device management:
 | devres | Automatic resource cleanup |
 | cdev | Character device interface |
 | class | Functional device grouping |
+| device_link | Supplier-consumer dependency tracking |
+| subsys_private | Internal driver core bookkeeping |
 
 Key benefits:
 - **Unified hierarchy**: Consistent device representation
-- **Hotplug support**: Dynamic device addition/removal
+- **Hotplug support**: Dynamic device addition/removal via uevents
 - **Resource management**: devres for automatic cleanup
 - **Power management**: Integrated PM infrastructure
+- **Probe ordering**: Device links and deferred probe
 - **Userspace visibility**: sysfs for configuration and monitoring

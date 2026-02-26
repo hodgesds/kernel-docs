@@ -14,6 +14,10 @@ that make up the filesystem abstraction layer.
 6. [Page Cache](#6-page-cache)
 7. [VFS Path Walking](#7-vfs-path-walking)
 8. [Buffered I/O Path](#8-buffered-io-path)
+9. [Filesystem Registration](#9-filesystem-registration)
+10. [Mount Internals](#10-mount-internals)
+11. [Direct I/O Path](#11-direct-io-path)
+12. [Writeback Control](#12-writeback-control)
 
 ---
 
@@ -1766,6 +1770,439 @@ struct folio *writeback_iter(struct address_space *mapping,
 
 ---
 
+## 9. Filesystem Registration
+
+### struct file_system_type
+
+Every filesystem must define a `file_system_type` to register itself with the
+VFS. This structure provides the filesystem name, flags, and the callback to
+create or find a superblock during mount.
+
+```c
+/* include/linux/fs.h */
+struct file_system_type {
+    const char *name;                   /* Filesystem name (e.g., "ext4") */
+    int fs_flags;                       /* FS_REQUIRES_DEV, etc. */
+    int (*init_fs_context)(struct fs_context *);  /* Modern mount API */
+    const struct fs_parameter_spec *parameters;   /* Mount parameters */
+    struct dentry *(*mount)(struct file_system_type *, int,
+                            const char *, void *);  /* Legacy mount */
+    void (*kill_sb)(struct super_block *);         /* Destroy superblock */
+    struct module *owner;
+    struct file_system_type *next;      /* Linked list of all fs types */
+    struct hlist_head fs_supers;        /* All superblocks of this type */
+
+    struct lock_class_key s_lock_key;
+    struct lock_class_key s_umount_key;
+    struct lock_class_key s_vfs_rename_key;
+    struct lock_class_key s_writers_key[SB_FREEZE_LEVELS];
+
+    struct lock_class_key i_lock_key;
+    struct lock_class_key i_mutex_key;
+    struct lock_class_key invalidate_lock_key;
+    struct lock_class_key i_mutex_dir_key;
+};
+```
+
+### Filesystem Flags
+
+```c
+#define FS_REQUIRES_DEV         1       /* Needs a block device */
+#define FS_BINARY_MOUNTDATA     2       /* Binary mount data */
+#define FS_HAS_SUBTYPE          4       /* Has subtype (e.g., fuse.sshfs) */
+#define FS_USERNS_MOUNT         8       /* Can mount in user namespace */
+#define FS_DISALLOW_NOTIFY_PERM 16      /* Deny fanotify permission events */
+#define FS_ALLOW_IDMAP          32      /* Supports idmapped mounts */
+#define FS_RENAME_DOES_D_MOVE   32768   /* FS handles d_move in rename */
+```
+
+### Registration
+
+```c
+/* fs/filesystems.c */
+static struct file_system_type *file_systems;   /* Head of linked list */
+static DEFINE_RWLOCK(file_systems_lock);        /* Protects the list */
+
+int register_filesystem(struct file_system_type *fs);
+int unregister_filesystem(struct file_system_type *fs);
+    /* unregister calls synchronize_rcu() after removal */
+```
+
+### Modern Mount API (fs_context)
+
+The modern mount API replaces the legacy `mount` callback with a
+`fs_context`-based approach that separates configuration from superblock
+creation:
+
+```c
+/* include/linux/fs_context.h */
+struct fs_context {
+    const struct fs_context_operations *ops;
+    struct file_system_type *fs_type;
+    void *fs_private;                   /* Filesystem private data */
+    struct dentry *root;                /* Root dentry (result) */
+    struct user_namespace *user_ns;
+    struct net *net_ns;
+    const struct cred *cred;
+    char *source;                       /* Source device/path */
+    char *subtype;
+    void *security;                     /* LSM context */
+    unsigned int sb_flags;
+    unsigned int sb_flags_mask;
+    unsigned int s_iflags;
+    enum fs_context_purpose purpose:8;
+    /* ... */
+};
+
+struct fs_context_operations {
+    void (*free)(struct fs_context *fc);
+    int (*dup)(struct fs_context *fc, struct fs_context *src_fc);
+    int (*parse_param)(struct fs_context *fc, struct fs_parameter *param);
+    int (*parse_monolithic)(struct fs_context *fc, void *data);
+    int (*get_tree)(struct fs_context *fc);    /* Create/find superblock */
+    int (*reconfigure)(struct fs_context *fc); /* Remount */
+};
+
+/* Mount sequence: */
+/* 1. fs_type->init_fs_context(fc)  - allocate fs-private context */
+/* 2. fc->ops->parse_param()        - for each mount option */
+/* 3. vfs_get_tree(fc)              - calls fc->ops->get_tree() */
+/* 4. do_new_mount_fc()             - attach to mount tree */
+```
+
+---
+
+## 10. Mount Internals
+
+### struct mount vs struct vfsmount
+
+The VFS uses two structures for mounts: the public `vfsmount` (visible to
+filesystems) and the internal `mount` (containing the full tree structure).
+
+```c
+/* include/linux/mount.h - public */
+struct vfsmount {
+    struct dentry *mnt_root;            /* Root dentry of this mount */
+    struct super_block *mnt_sb;         /* Superblock */
+    int mnt_flags;                      /* MNT_* flags */
+    struct mnt_idmap *mnt_idmap;        /* ID mapping */
+};
+
+/* fs/mount.h - internal */
+struct mount {
+    struct hlist_node mnt_hash;         /* Hash table linkage */
+    struct mount *mnt_parent;           /* Parent mount */
+    struct dentry *mnt_mountpoint;      /* Dentry where mounted on */
+    struct vfsmount mnt;                /* Public vfsmount (embedded) */
+    union {
+        struct rcu_head mnt_rcu;
+        struct llist_node mnt_llist;
+    };
+    struct mnt_pcp __percpu *mnt_pcp;   /* Per-CPU ref counters */
+    struct list_head mnt_mounts;        /* List of children */
+    struct list_head mnt_child;         /* Child of parent */
+    struct list_head mnt_instance;      /* sb->s_mounts */
+    const char *mnt_devname;            /* Device name */
+    union {
+        struct rb_node mnt_node;        /* For ns->mounts tree */
+        struct list_head mnt_list;
+    };
+    struct list_head mnt_expire;        /* Expiry list */
+    struct list_head mnt_share;         /* Shared mount circular list */
+    struct list_head mnt_slave_list;    /* Slave mount list */
+    struct list_head mnt_slave;         /* Slave list entry */
+    struct mount *mnt_master;           /* Slave's master */
+    struct mnt_namespace *mnt_ns;       /* Containing namespace */
+    struct mountpoint *mnt_mp;          /* Where we are mounted */
+    int mnt_count;
+    int mnt_writers;
+    /* ... */
+};
+
+/* Convert public to internal */
+static inline struct mount *real_mount(struct vfsmount *mnt)
+{
+    return container_of(mnt, struct mount, mnt);
+}
+```
+
+### Mount Namespace
+
+```c
+/* fs/mount.h */
+struct mnt_namespace {
+    struct ns_common ns;
+    struct mount *root;                 /* Root mount */
+    struct rb_root mounts;              /* All mounts in this ns */
+    struct user_namespace *user_ns;
+    struct ucounts *ucounts;
+    u64 seq;                            /* Sequence counter */
+    wait_queue_head_t poll;
+    u64 event;
+    unsigned int nr_mounts;             /* Number of mounts */
+    unsigned int pending_mounts;
+};
+```
+
+### Mount Propagation
+
+Mount propagation controls how mount/unmount events propagate between
+mount namespaces:
+
+| Type | Description |
+|------|-------------|
+| **Shared** (`MS_SHARED`) | Events propagate to/from peer group members |
+| **Slave** (`MS_SLAVE`) | Events propagate from master, not to master |
+| **Private** (`MS_PRIVATE`) | No propagation (default) |
+| **Unbindable** (`MS_UNBINDABLE`) | Private + cannot be bind-mounted |
+
+Propagation is implemented in `fs/pnode.c` via `propagate_mnt()` (for mount)
+and `propagate_umount()` (for unmount).
+
+---
+
+## 11. Direct I/O Path
+
+Direct I/O bypasses the page cache, reading and writing directly between
+userspace buffers and the storage device. This is used for databases and
+applications that manage their own caching.
+
+### iomap-based Direct I/O
+
+Modern filesystems use the iomap infrastructure for direct I/O:
+
+```c
+/* include/linux/iomap.h */
+ssize_t iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
+                     const struct iomap_ops *ops,
+                     const struct iomap_dio_ops *dops,
+                     unsigned int dio_flags, void *private,
+                     size_t done_before);
+
+/* dio_flags */
+#define IOMAP_DIO_FORCE_WAIT    (1 << 0)  /* Force synchronous completion */
+#define IOMAP_DIO_OVERWRITE_ONLY (1 << 1) /* Only overwrite, no allocation */
+#define IOMAP_DIO_PARTIAL       (1 << 2)  /* May return partial result */
+```
+
+### Cache Coherency
+
+When a file has both cached (buffered) and direct I/O users, the kernel must
+maintain coherency:
+
+```c
+/* Before direct write: flush and invalidate cached pages */
+filemap_write_and_wait_range(mapping, pos, end);
+invalidate_inode_pages2_range(mapping, start, end);
+
+/* After direct write: invalidate stale cache entries */
+kiocb_invalidate_post_direct_write(iocb, count);
+    /* calls invalidate_inode_pages2_range() again */
+```
+
+### Alignment Requirements
+
+Direct I/O typically requires alignment to the block device's logical block
+size (usually 512 bytes or 4096 bytes). Both the file offset and the userspace
+buffer address must be aligned. Misaligned requests fall back to buffered I/O
+or return `-EINVAL` depending on the filesystem.
+
+---
+
+## 12. Writeback Control
+
+### struct writeback_control
+
+The writeback_control structure specifies what and how to write back dirty
+pages:
+
+```c
+/* include/linux/writeback.h */
+struct writeback_control {
+    long nr_to_write;               /* Pages to write (decremented) */
+    long pages_skipped;             /* Pages skipped */
+
+    loff_t range_start;             /* Byte range start */
+    loff_t range_end;               /* Byte range end */
+
+    enum writeback_sync_modes sync_mode;
+    unsigned for_kupdate:1;         /* Periodic writeback */
+    unsigned for_background:1;      /* Background writeback */
+    unsigned tagged_writepages:1;   /* Tag-based iteration */
+    unsigned for_reclaim:1;         /* Invoked from page reclaim */
+    unsigned range_cyclic:1;        /* Wrap around to start */
+    unsigned for_sync:1;            /* sync(2) call */
+    unsigned unpinned_netfs_wb:1;   /* Unpinned netfs writeback */
+
+    /* cgroup writeback */
+#ifdef CONFIG_CGROUP_WRITEBACK
+    struct bdi_writeback *wb;       /* Target bdi_writeback */
+    struct inode *inode;            /* Target inode */
+    int wb_id;                      /* Writeback ID */
+    int wb_lcand_id;                /* Last winner candidate */
+    int wb_tcand_id;                /* This turn candidate */
+    size_t wb_bytes;                /* Bytes */
+    size_t wb_lcand_bytes;
+    size_t wb_tcand_bytes;
+#endif
+};
+
+/* Sync modes */
+enum writeback_sync_modes {
+    WB_SYNC_NONE,   /* Don't wait on completion */
+    WB_SYNC_ALL,    /* Wait on every page */
+};
+```
+
+### struct bdi_writeback
+
+Each backing device (and each cgroup with dirty pages) has a writeback
+context:
+
+```c
+/* include/linux/backing-dev-defs.h */
+struct bdi_writeback {
+    struct backing_dev_info *bdi;
+    unsigned long state;
+    unsigned long last_old_flush;
+
+    struct list_head b_dirty;       /* Dirty inodes */
+    struct list_head b_io;          /* Parked for writeback */
+    struct list_head b_more_io;     /* Parked for more writeback */
+    struct list_head b_dirty_time;  /* Only timestamps dirty */
+    spinlock_t list_lock;           /* Protects b_* lists */
+
+    unsigned long write_bandwidth;  /* Estimated write bandwidth */
+    unsigned long avg_write_bandwidth;
+    unsigned long dirty_ratelimit;
+    unsigned long balanced_dirty_ratelimit;
+
+    struct delayed_work dwork;      /* Writeback work item */
+    struct delayed_work bw_dwork;   /* Bandwidth estimate work */
+    /* ... cgroup writeback fields ... */
+};
+```
+
+### Writeback Triggers
+
+```
+wb_workfn(work)                          /* Main writeback worker */
+    │
+    ├── wb_do_writeback(wb)
+    │       │
+    │       ├── wb_check_start_all()     /* Handle WB_start_all request */
+    │       ├── wb_check_old_data_flush()/* Periodic kupdate-style flush */
+    │       │       └── dirty_expire_interval (default 30s)
+    │       └── wb_check_background_flush()
+    │               └── Triggered when dirty pages > background_ratio
+    │
+    └── Reschedule if more work (dirty_writeback_interval = 5s)
+```
+
+### Dirty Page Tunables
+
+| Sysctl | Default | Description |
+|--------|---------|-------------|
+| `vm.dirty_ratio` | 20 | Max dirty pages as % of RAM (sync threshold) |
+| `vm.dirty_background_ratio` | 10 | Start background writeback at this % |
+| `vm.dirty_writeback_centisecs` | 500 | Writeback thread wakeup interval (5s) |
+| `vm.dirty_expire_centisecs` | 3000 | Age at which dirty data must be written (30s) |
+| `vm.dirty_bytes` | 0 | Absolute dirty threshold (overrides ratio) |
+| `vm.dirty_background_bytes` | 0 | Absolute background threshold |
+
+### Per-cgroup Writeback
+
+With `CONFIG_CGROUP_WRITEBACK`, each memory cgroup can have its own
+`bdi_writeback` instance, allowing per-cgroup dirty throttling and writeback
+scheduling. The `backing_dev_info` maintains a radix tree (`cgwb_tree`) of
+active per-cgroup writeback instances.
+
+---
+
+## Locking Summary
+
+| Lock | Type | Scope | Purpose |
+|------|------|-------|---------|
+| `i_rwsem` | rw_semaphore | Per-inode | Directory operations, file size changes, fallocate |
+| `i_lock` | spinlock | Per-inode | Inode state (i_state), i_count, i_nlink, dirty flags |
+| `s_umount` | rw_semaphore | Per-superblock | Mount/unmount/remount/freeze serialization |
+| `s_sync_lock` | mutex | Per-superblock | Serializes sync operations |
+| `sb_lock` | spinlock | Global | Protects super_blocks list and s_count |
+| `s_inode_list_lock` | spinlock | Per-superblock | Protects s_inodes list |
+| `s_inode_wblist_lock` | spinlock | Per-superblock | Protects s_inodes_wb list |
+| `s_vfs_rename_mutex` | mutex | Per-superblock | Serializes cross-directory renames |
+| `d_lockref` | lockref | Per-dentry | Combined spinlock + refcount for dentry |
+| `rename_lock` | seqlock | Global | Protects dcache tree topology during renames |
+| `mount_lock` | seqlock | Global | Protects mount tree, read by RCU-walk path lookup |
+| `namespace_sem` | rw_semaphore | Global | Mount/unmount operations, ns cloning |
+| `i_mmap_rwsem` | rw_semaphore | Per-address_space | Protects i_mmap VMA tree |
+| `invalidate_lock` | rw_semaphore | Per-address_space | Invalidation vs page fault races |
+| `f_pos_lock` | mutex | Per-file | Serializes pread/pwrite position updates |
+| `inode_hash_lock` | spinlock | Global | Protects inode hash table |
+| `file_systems_lock` | rwlock | Global | Protects file_system_type linked list |
+| `xa_lock` (i_pages) | spinlock | Per-address_space | Protects XArray page cache entries |
+| `wb.list_lock` | spinlock | Per-bdi_writeback | Protects dirty inode lists (b_dirty, b_io, etc.) |
+| `flc_lock` | spinlock | Per-inode | file_lock_context for POSIX/flock locks |
+| `blocked_hash` | spinlock | Global | Hash of sleeping lock waiters |
+
+**Lock ordering** (from `fs/inode.c`):
+```
+inode->i_rwsem
+  inode->i_lock
+    sb->s_inode_list_lock
+      wb->list_lock
+        inode->i_mapping->invalidate_lock
+          inode->i_mapping->i_pages (xa_lock)
+```
+
+---
+
+## Source Files
+
+### Core VFS (`fs/`)
+
+| File | Description |
+|------|-------------|
+| `namei.c` | Path walking, RCU-walk, symlink resolution, vfs_mkdir/unlink/rename |
+| `inode.c` | Inode cache, hash table, `iget_locked()`, `iput()`, `evict()`, `__mark_inode_dirty()` |
+| `super.c` | Superblock lifecycle: `sget_fc()`, `generic_shutdown_super()`, `vfs_get_tree()`, freeze/thaw |
+| `dcache.c` | Dentry cache, `d_lookup()`, `d_alloc()`, `d_instantiate()`, `d_move()`, parallel lookup |
+| `file_table.c` | `struct file` lifecycle: `alloc_file()`, `fput()`, `filp_cachep` slab |
+| `filesystems.c` | `register_filesystem()`, `unregister_filesystem()`, `file_systems` linked list |
+| `open.c` | `do_dentry_open()`, `vfs_open()`, `do_truncate()`, `filp_open()` |
+| `read_write.c` | `vfs_read()`, `vfs_write()`, `generic_file_read_iter()`, f_pos management |
+| `namespace.c` | Mount syscall: `do_mount()`, `do_new_mount()`, mount_lock, namespace_sem |
+| `mount.h` | Internal: `struct mount`, `struct mnt_namespace`, `real_mount()` |
+| `pnode.c` | Mount propagation: `propagate_mnt()`, `propagate_umount()` |
+| `ioctl.c` | VFS ioctl dispatch, generic ioctls (FIOCLEX, FIONREAD, FIBMAP, etc.) |
+| `stat.c` | `vfs_stat()`, `vfs_getattr()`, `statx(2)` |
+| `xattr.c` | `vfs_getxattr()`, `vfs_setxattr()`, `vfs_removexattr()` |
+| `locks.c` | POSIX/BSD locking, leases, `file_lock_context`, `blocked_hash` |
+
+### Page Cache and Writeback (`mm/`)
+
+| File | Description |
+|------|-------------|
+| `filemap.c` | Page cache core: `filemap_get_folio()`, `filemap_fault()`, `generic_file_read_iter()` |
+| `readahead.c` | Readahead state machine: `page_cache_sync_ra()`, `page_cache_async_ra()` |
+| `page-writeback.c` | Dirty throttling: `balance_dirty_pages_ratelimited()`, `do_writepages()`, tunables |
+| `truncate.c` | `truncate_inode_pages_range()`, `invalidate_inode_pages2()`, cache coherency |
+
+### Header Files
+
+| File | Description |
+|------|-------------|
+| `include/linux/fs.h` | Central VFS: inode, file, super_block, file_system_type, all ops tables |
+| `include/linux/dcache.h` | `struct dentry`, `DCACHE_*` flags, dcache API |
+| `include/linux/mount.h` | Public `struct vfsmount`, `MNT_*` flags, `mnt_want_write()` |
+| `include/linux/pagemap.h` | Page cache API, `PAGECACHE_TAG_*`, invalidation functions |
+| `include/linux/writeback.h` | `struct writeback_control`, writeback API, `wb_domain` |
+| `include/linux/backing-dev-defs.h` | `struct bdi_writeback`, `struct backing_dev_info` |
+| `include/linux/buffer_head.h` | `struct buffer_head`, `get_block_t` (legacy block mapping) |
+| `include/linux/fs_context.h` | Modern mount API: `struct fs_context`, `fs_context_operations` |
+
+---
+
 ## Summary
 
 The Linux VFS provides a powerful abstraction layer that:
@@ -1776,13 +2213,17 @@ The Linux VFS provides a powerful abstraction layer that:
 4. **Supports multiple access patterns** (buffered, direct, memory-mapped)
 5. **Enables high-performance path resolution** through RCU-walk optimization
 6. **Provides consistent semantics** across diverse filesystem implementations
+7. **Supports filesystem registration** via file_system_type and the modern fs_context API
+8. **Manages mount namespaces** with propagation for container isolation
 
 The key insight is that VFS structures form a hierarchy:
-- `super_block` owns the filesystem
+- `file_system_type` registers the filesystem
+- `super_block` owns the filesystem instance
 - `inode` represents persistent objects
 - `dentry` provides the naming layer
 - `file` represents open instances
 - `address_space` manages cached data
+- `mount` / `vfsmount` connects filesystems to the namespace
 
 Understanding these structures and their interactions is essential for kernel
 filesystem development, performance optimization, and debugging filesystem
