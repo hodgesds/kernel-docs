@@ -11,8 +11,9 @@
 8. [Per-CPU Variables](#per-cpu-variables)
 9. [Wait Queues](#wait-queues)
 10. [Completions](#completions)
-11. [Lockdep](#lockdep)
-12. [Lock Selection Guide](#lock-selection-guide)
+11. [Guard/Cleanup Macros (RAII Locking)](#guardcleanup-macros-raii-locking)
+12. [Lockdep](#lockdep)
+13. [Lock Selection Guide](#lock-selection-guide)
 
 ---
 
@@ -94,16 +95,32 @@ typedef struct raw_spinlock {
 #endif
 } raw_spinlock_t;
 
-/* Architecture-specific (x86) */
-typedef struct arch_spinlock {
+/* Architecture-specific (x86) - Queued Spinlock */
+typedef struct qspinlock {
     union {
         atomic_t val;
         struct {
-            u16 tail;
-            u16 head;
+            u8 locked;      /* 0=unlocked, 1=locked */
+            u8 pending;     /* one waiter bypasses MCS queue */
+        };
+        struct {
+            u16 locked_pending;
+            u16 tail;       /* MCS queue tail (CPU+1, index) */
         };
     };
 } arch_spinlock_t;
+
+/*
+ * Qspinlock bit layout (NR_CPUS < 16K):
+ *   Bits 0-7:   locked byte
+ *   Bit 8:      pending (one waiter bypass)
+ *   Bits 16-17: tail index (which per-CPU MCS node)
+ *   Bits 18-31: tail CPU (+1)
+ *
+ * Note: Under CONFIG_PREEMPT_RT, spinlock_t maps to
+ * rt_mutex_base, not raw_spinlock. Only raw_spinlock_t
+ * remains a true spinning lock on PREEMPT_RT.
+ */
 ```
 
 ### Spinlock API
@@ -140,7 +157,10 @@ spin_lock_bh(&my_lock);        /* Disable bottom halves + lock */
 spin_unlock_bh(&my_lock);      /* Unlock + enable bottom halves */
 ```
 
-### Ticket Spinlock (Traditional)
+### Ticket Spinlock (Historical)
+
+The ticket spinlock was the traditional x86 spinlock implementation, now replaced
+by the queued spinlock (qspinlock). Shown here for historical context:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -238,10 +258,13 @@ waiters briefly spin if the owner is running on another CPU, avoiding the
 overhead of context switches for short critical sections.
 
 ```c
-/* include/linux/mutex.h */
+/* include/linux/mutex_types.h */
 struct mutex {
     atomic_long_t       owner;      /* Owner task + flags */
     raw_spinlock_t      wait_lock;  /* Protects wait_list */
+#ifdef CONFIG_MUTEX_SPIN_ON_OWNER
+    struct optimistic_spin_queue osq; /* MCS spinner queue for adaptive spinning */
+#endif
     struct list_head    wait_list;  /* List of waiting tasks */
 #ifdef CONFIG_DEBUG_MUTEXES
     void                *magic;
@@ -251,10 +274,11 @@ struct mutex {
 #endif
 };
 
-/* Owner field encoding */
-#define MUTEX_FLAG_WAITERS    0x01  /* Waiters pending */
-#define MUTEX_FLAG_HANDOFF    0x02  /* Handoff to first waiter */
-#define MUTEX_FLAGS           0x03
+/* Owner field encoding (kernel/locking/mutex.h) */
+#define MUTEX_FLAG_WAITERS    0x01  /* Non-empty waiter list; wakeup needed */
+#define MUTEX_FLAG_HANDOFF    0x02  /* Unlock must hand lock to top waiter */
+#define MUTEX_FLAG_PICKUP     0x04  /* Handoff done, waiting for pickup */
+#define MUTEX_FLAGS           0x07  /* All three low bits */
 ```
 
 ### Mutex API
@@ -408,13 +432,19 @@ prevent writer starvation.
 /* include/linux/rwsem.h */
 struct rw_semaphore {
     atomic_long_t count;        /* Reader count or writer flag */
-    atomic_long_t owner;        /* Writer task */
-    struct list_head wait_list; /* Waiting readers/writers */
+    atomic_long_t owner;        /* Writer task + state flags */
+#ifdef CONFIG_RWSEM_SPIN_ON_OWNER
+    struct optimistic_spin_queue osq; /* MCS spinner queue */
+#endif
     raw_spinlock_t wait_lock;
+    struct list_head wait_list; /* Waiting readers/writers */
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
     struct lockdep_map dep_map;
 #endif
 };
+
+/* count field bit 0 is the write-lock bit */
+#define RWSEM_WRITER_LOCKED     (1UL << 0)
 
 /* API */
 DECLARE_RWSEM(my_rwsem);
@@ -427,7 +457,7 @@ up_write(&my_rwsem);           /* Release write lock */
 
 /* Interruptible variants */
 down_read_interruptible(&my_rwsem);
-down_write_interruptible(&my_rwsem);
+down_write_killable(&my_rwsem);   /* Note: no down_write_interruptible */
 
 /* Try variants */
 down_read_trylock(&my_rwsem);
@@ -510,15 +540,18 @@ separately. Seqlocks are ideal for read-mostly data like system time where
 readers should never block writers.
 
 ```c
-/* include/linux/seqlock.h */
+/* include/linux/seqlock_types.h */
 typedef struct {
-    unsigned sequence;
+    seqcount_spinlock_t seqcount; /* Counter WITH associated spinlock */
     spinlock_t lock;
 } seqlock_t;
 
 /* Sequence counter only (no embedded lock) */
 typedef struct seqcount {
     unsigned sequence;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    struct lockdep_map dep_map;
+#endif
 } seqcount_t;
 ```
 
@@ -595,10 +628,11 @@ write_seqcount_begin(&seq);
 /* ... modify data ... */
 write_seqcount_end(&seq);
 
-/* Seqcount with associated lock */
-seqcount_spinlock_t seq;
-seqcount_mutex_t seq;
-seqcount_rwlock_t seq;
+/* Seqcount with associated lock (stores POINTER to lock) */
+seqcount_spinlock_t seq;       /* validates writer holds spinlock */
+seqcount_raw_spinlock_t seq;   /* raw spinlock variant */
+seqcount_mutex_t seq;          /* mutex variant */
+seqcount_rwlock_t seq;         /* rwlock variant */
 
 /* These validate that the associated lock is held on write */
 ```
@@ -1043,7 +1077,9 @@ typedef struct wait_queue_entry wait_queue_entry_t;
 /* Flags */
 #define WQ_FLAG_EXCLUSIVE   0x01  /* Wake only one waiter */
 #define WQ_FLAG_WOKEN       0x02  /* Was woken */
-#define WQ_FLAG_BOOKMARK    0x04  /* For iteration */
+#define WQ_FLAG_CUSTOM      0x04  /* Custom wakeup function */
+#define WQ_FLAG_DONE        0x08  /* Wait completed */
+#define WQ_FLAG_PRIORITY    0x10  /* Priority waiter */
 ```
 
 ### Wait Queue API
@@ -1172,6 +1208,7 @@ wait_for_completion_interruptible_timeout(&my_completion, timeout);
 /* Signal completion */
 complete(&my_completion);        /* Wake one waiter, increment done */
 complete_all(&my_completion);    /* Wake all waiters, set done = UINT_MAX */
+complete_on_current_cpu(&my_completion); /* Wake waiter on current CPU */
 
 /* Reinitialize (for reuse) */
 reinit_completion(&my_completion);
@@ -1208,6 +1245,186 @@ bool done = completion_done(&my_completion);
 │     - Unload waits for completion                           │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Guard/Cleanup Macros (RAII Locking)
+
+The guard/cleanup infrastructure (`include/linux/cleanup.h`) provides RAII-style
+scope-based resource management using GCC `__attribute__((cleanup))`. This is a
+major modern addition that eliminates the "goto error" pattern and is now used
+pervasively in new kernel code.
+
+### Core Concepts
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Guard/Cleanup Infrastructure                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Problem: Manual lock/unlock pairs are error-prone          │
+│  - Forget to unlock on error paths                          │
+│  - Complex goto chains for cleanup                          │
+│  - Duplicated unlock code                                   │
+│                                                             │
+│  Solution: RAII-style automatic cleanup                     │
+│  - guard(mutex)(&my_mutex) auto-unlocks at scope end        │
+│  - __free(kfree) auto-frees at scope end                    │
+│  - no_free_ptr(p) transfers ownership out                   │
+│                                                             │
+│  Three main mechanisms:                                     │
+│  1. __free(name) - automatic resource cleanup               │
+│  2. guard(name)  - block-scoped lock acquisition            │
+│  3. scoped_guard(name) - statement-scoped lock              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Resource Cleanup with __free()
+
+```c
+/* include/linux/cleanup.h */
+
+/* Define a cleanup function */
+DEFINE_FREE(kfree, void *, if (_T) kfree(_T));
+
+/* Usage: variable auto-freed when it goes out of scope */
+void *p __free(kfree) = kmalloc(size, GFP_KERNEL);
+if (!p)
+    return -ENOMEM;
+
+/* Transfer ownership out (prevents auto-free) */
+return no_free_ptr(p);
+
+/* Or in a function returning a pointer */
+return_ptr(p);  /* equivalent to return no_free_ptr(p) */
+```
+
+### Lock Guards
+
+```c
+/* guard(name) - held for rest of enclosing scope */
+guard(mutex)(&my_mutex);
+/* ... critical section ... */
+/* mutex_unlock() called automatically at scope end */
+
+/* scoped_guard(name) - held only for the compound statement */
+scoped_guard(spinlock_irqsave, &my_lock) {
+    /* ... critical section ... */
+}
+/* spin_unlock_irqrestore() called automatically */
+
+/* scoped_guard with conditional lock - body SKIPPED if lock fails */
+scoped_guard(mutex_try, &my_mutex) {
+    /* only reached if mutex_trylock succeeded */
+    do_work();
+}
+
+/* scoped_cond_guard - conditional with explicit failure action */
+scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &my_mutex) {
+    do_work();
+}
+
+/* Zero-argument guards (no lock pointer needed) */
+guard(rcu)();           /* rcu_read_lock/unlock */
+guard(irqsave)();       /* local_irq_save/restore (flags in struct) */
+guard(preempt)();       /* preempt_disable/enable */
+```
+
+### Available Guards
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│               Registered Guard Names                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Spinlock guards (include/linux/spinlock.h):                │
+│  ──────────────────────────────────────────                 │
+│  guard(raw_spinlock)         raw_spin_lock/unlock           │
+│  guard(raw_spinlock_irq)     + IRQ disable/enable           │
+│  guard(raw_spinlock_irqsave) + IRQ save/restore             │
+│  guard(spinlock)             spin_lock/unlock               │
+│  guard(spinlock_irq)         + IRQ disable/enable           │
+│  guard(spinlock_irqsave)     + IRQ save/restore             │
+│  guard(read_lock)            read_lock/unlock               │
+│  guard(read_lock_irq)        + IRQ disable/enable           │
+│  guard(read_lock_irqsave)    + IRQ save/restore             │
+│  guard(write_lock)           write_lock/unlock              │
+│  guard(write_lock_irq)       + IRQ disable/enable           │
+│  guard(write_lock_irqsave)   + IRQ save/restore             │
+│                                                             │
+│  All spinlock guards also have _try conditional variants    │
+│                                                             │
+│  Mutex guards (include/linux/mutex.h):                      │
+│  ─────────────────────────────────────                      │
+│  guard(mutex)                mutex_lock/unlock              │
+│  guard(mutex_try)            mutex_trylock (conditional)    │
+│  guard(mutex_intr)           mutex_lock_interruptible       │
+│                                                             │
+│  RW semaphore guards (include/linux/rwsem.h):               │
+│  ────────────────────────────────────────────                │
+│  guard(rwsem_read)           down_read/up_read              │
+│  guard(rwsem_read_try)       trylock (conditional)          │
+│  guard(rwsem_read_intr)      interruptible (conditional)    │
+│  guard(rwsem_write)          down_write/up_write            │
+│  guard(rwsem_write_try)      trylock (conditional)          │
+│                                                             │
+│  Zero-argument guards (no pointer parameter):               │
+│  ────────────────────────────────────────────                │
+│  guard(rcu)                  rcu_read_lock/unlock           │
+│  guard(irq)                  local_irq_disable/enable       │
+│  guard(irqsave)              local_irq_save/restore         │
+│  guard(preempt)              preempt_disable/enable         │
+│  guard(preempt_notrace)      notrace variant                │
+│  guard(migrate)              migrate_disable/enable         │
+│  guard(cpus_read_lock)       CPU hotplug read lock          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Defining Custom Guards
+
+```c
+/* include/linux/cleanup.h */
+
+/* DEFINE_GUARD(name, type, lock_expr, unlock_expr) */
+DEFINE_GUARD(my_lock, struct my_lock_type *,
+             my_lock_acquire(_T), my_lock_release(_T));
+
+/* Conditional guard (trylock variant) */
+DEFINE_GUARD_COND(my_lock, _try, my_trylock(_T));
+
+/* Zero-argument guard */
+DEFINE_LOCK_GUARD_0(my_context,
+    my_context_enter(),
+    my_context_exit());
+
+/* One-argument guard with extra state */
+DEFINE_LOCK_GUARD_1_COND(my_lock, _intr,
+    my_lock_interruptible(_T) == 0);
+```
+
+### LIFO Ordering Rule
+
+```c
+/*
+ * CRITICAL: Multiple cleanup variables in the same scope are
+ * cleaned up in REVERSE definition order (LIFO).
+ *
+ * This means: define the lock guard BEFORE the __free variable
+ * so the lock is still held when the resource cleanup runs.
+ */
+
+/* CORRECT */
+guard(mutex)(&lock);                    /* defined first, cleaned up last */
+void *p __free(kfree) = kmalloc(...);   /* defined second, freed first */
+/* p is freed while lock is still held */
+
+/* WRONG - lock released before free */
+void *p __free(kfree) = kmalloc(...);   /* defined first, freed LAST */
+guard(mutex)(&lock);                    /* defined second, unlocked FIRST */
+/* lock released before p is freed - potential use-after-free! */
 ```
 
 ---
@@ -1450,7 +1667,9 @@ use_result();
 | completion | Yes | No | Thread synchronization |
 | wait_queue | Yes | No | Complex wait conditions |
 | RCU | No (read) | Yes (read) | Read-mostly, pointer-based data |
+| guard() | N/A | N/A | RAII lock management (any lock) |
 
 Understanding when to use each primitive is key to writing correct, efficient
 kernel code. Always consider the critical section length, whether you might
-sleep, and whether interrupts need protection.
+sleep, and whether interrupts need protection. For new code, prefer guard()
+and scoped_guard() over manual lock/unlock pairs to eliminate error-path bugs.

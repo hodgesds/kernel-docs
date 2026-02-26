@@ -82,32 +82,38 @@ since boot.
 ```c
 /* include/linux/jiffies.h */
 
-/* HZ - timer interrupts per second (compile-time config) */
+/* HZ - timer interrupts per second (from asm/param.h) */
 /* Common values: 100, 250, 300, 1000 */
-#ifdef CONFIG_HZ_100
-#define HZ 100
-#elif CONFIG_HZ_250
-#define HZ 250
-#elif CONFIG_HZ_1000
-#define HZ 1000
-#endif
 
 /* Jiffies counter */
 extern unsigned long volatile jiffies;      /* 32-bit on 32-bit systems */
 extern u64 jiffies_64;                      /* Always 64-bit */
 
-/* Convert between time units */
-#define jiffies_to_msecs(j)     ((j) * 1000 / HZ)
-#define jiffies_to_usecs(j)     ((j) * 1000000 / HZ)
-#define msecs_to_jiffies(m)     ((m) * HZ / 1000)
-#define usecs_to_jiffies(u)     ((u) * HZ / 1000000)
+/* INITIAL_JIFFIES starts at -300*HZ to expose wraparound bugs early */
 
-/* Safe jiffies comparison (handles wraparound) */
-#define time_after(a, b)        ((long)((b) - (a)) < 0)
+/* Convert between time units (functions, not simple macros) */
+extern unsigned int jiffies_to_msecs(const unsigned long j);
+extern unsigned int jiffies_to_usecs(const unsigned long j);
+unsigned long msecs_to_jiffies(const unsigned int m);  /* compile-time folded */
+unsigned long usecs_to_jiffies(const unsigned int u);
+#define secs_to_jiffies(_secs)  ((_secs) * HZ)
+
+/* 64-bit variants */
+extern u64 jiffies64_to_nsecs(u64 j);
+extern u64 jiffies64_to_msecs(u64 j);
+
+/* Safe jiffies comparison (handles wraparound, includes typecheck()) */
+#define time_after(a, b)        (typecheck(unsigned long, a) && \
+                                 typecheck(unsigned long, b) && \
+                                 ((long)((b) - (a)) < 0))
 #define time_before(a, b)       time_after(b, a)
 #define time_after_eq(a, b)     ((long)((a) - (b)) >= 0)
 #define time_before_eq(a, b)    time_after_eq(b, a)
 #define time_in_range(a, b, c)  (time_after_eq(a, b) && time_before_eq(a, c))
+#define time_in_range_open(a, b, c) (time_after_eq(a, b) && time_before(a, c))
+
+/* 64-bit comparison variants also available:
+ * time_after64, time_before64, time_in_range64, etc. */
 ```
 
 ### Jiffies Resolution
@@ -156,7 +162,7 @@ structure. Key fields include the expiration time, callback function pointer,
 and flags that control CPU affinity and deferral behavior.
 
 ```c
-/* include/linux/timer.h */
+/* include/linux/timer_types.h (split from timer.h) */
 struct timer_list {
     struct hlist_node       entry;
     unsigned long           expires;    /* Expiration time in jiffies */
@@ -168,10 +174,10 @@ struct timer_list {
 #endif
 };
 
-/* Timer flags */
+/* Timer flags (include/linux/timer.h) */
 #define TIMER_CPUMASK           0x0003FFFF  /* CPU binding mask */
 #define TIMER_MIGRATING         0x00040000
-#define TIMER_BASEMASK          0x00070000
+#define TIMER_BASEMASK          (TIMER_CPUMASK | TIMER_MIGRATING)
 #define TIMER_DEFERRABLE        0x00080000  /* Can be deferred for power */
 #define TIMER_PINNED            0x00100000  /* Pinned to CPU */
 #define TIMER_IRQSAFE           0x00200000  /* Safe in hardirq context */
@@ -194,9 +200,11 @@ mod_timer(&my_timer, jiffies + msecs_to_jiffies(100));
 my_timer.expires = jiffies + HZ;  /* 1 second */
 add_timer(&my_timer);
 
-/* Delete timer */
-del_timer(&my_timer);             /* May return while callback running */
-del_timer_sync(&my_timer);        /* Wait for callback to complete */
+/* Delete timer (prefer timer_delete* in new code) */
+timer_delete(&my_timer);              /* May return while callback running */
+timer_delete_sync(&my_timer);         /* Wait for callback to complete */
+del_timer(&my_timer);                 /* Legacy alias for timer_delete */
+del_timer_sync(&my_timer);            /* Legacy alias for timer_delete_sync */
 
 /* Check if timer pending */
 int pending = timer_pending(&my_timer);
@@ -204,6 +212,17 @@ int pending = timer_pending(&my_timer);
 /* Shutdown timer (prevents reactivation) */
 timer_shutdown(&my_timer);
 timer_shutdown_sync(&my_timer);
+
+/* Reduce timer expiration (only moves earlier, never later) */
+timer_reduce(&my_timer, jiffies + msecs_to_jiffies(50));
+
+/* Add timer to specific base */
+add_timer_local(&my_timer);           /* Local CPU only */
+add_timer_global(&my_timer);          /* Can migrate between CPUs */
+
+/* Get enclosing struct from timer callback */
+#define from_timer(var, callback_timer, timer_fieldname) \
+    container_of(callback_timer, typeof(*var), timer_fieldname)
 ```
 
 ### Timer Wheel (Hierarchical)
@@ -214,27 +233,30 @@ timer_shutdown_sync(&my_timer);
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  Modern kernel uses hierarchical timer wheel:               │
+│  LVL_BITS=6 (64 buckets/level), LVL_DEPTH=9 (HZ>100)       │
+│  Total: 576 buckets, 3 bases per CPU (NO_HZ_COMMON)         │
 │                                                             │
-│  Level 0 (expires in 0-63 jiffies)                          │
-│  ┌────┬────┬────┬────┬────┬────┬────┬────┐                  │
-│  │ 0  │ 1  │ 2  │ 3  │...│ 61 │ 62 │ 63 │ 64 buckets        │
-│  └────┴────┴────┴────┴────┴────┴────┴────┘                  │
+│  Granularity table (HZ=1000):                               │
+│  Level  Offset  Granularity   Range                         │
+│    0       0       1 ms       0 ms  -    63 ms              │
+│    1      64       8 ms      64 ms  -   511 ms              │
+│    2     128      64 ms     512 ms  -  4095 ms  (~4s)       │
+│    3     192     512 ms    4096 ms  - 32767 ms  (~32s)      │
+│    4     256    4096 ms       ~4s   -   ~4 min              │
+│    5     320   32768 ms      ~32s   -   ~34 min             │
+│    6     384  262144 ms      ~4m    -   ~4 hours            │
+│    7     448 2097152 ms      ~34m   -   ~1 day              │
+│    8     512 16777216 ms     ~4h    -   ~12 days            │
 │                                                             │
-│  Level 1 (expires in 64-4095 jiffies)                       │
-│  ┌────┬────┬────┬────┬────┬────┬────┬────┐                  │
-│  │ 0  │ 1  │ 2  │ 3  │...│ 61 │ 62 │ 63 │ 64 buckets        │
-│  └────┴────┴────┴────┴────┴────┴────┴────┘  (64x granular)  │
+│  Three bases per CPU (CONFIG_NO_HZ_COMMON):                 │
+│  BASE_LOCAL  (0) - Timers processed on local CPU only       │
+│  BASE_GLOBAL (1) - Timers that can migrate to non-idle CPUs │
+│  BASE_DEF    (2) - Deferrable timers                        │
 │                                                             │
-│  Level 2 (expires in 4096-262143 jiffies)                   │
-│  ┌────┬────┬────┬────┬────┬────┬────┬────┐                  │
-│  │ 0  │ 1  │ 2  │ 3  │...│ 61 │ 62 │ 63 │ 64 buckets        │
-│  └────┴────┴────┴────┴────┴────┴────┴────┘ (4096x granular) │
-│                                                             │
-│  ... continues for more levels                              │
-│                                                             │
-│  Benefits:                                                  │
+│  Key properties:                                            │
 │  - O(1) insertion (hash to bucket)                          │
-│  - Cascading only when wheel advances                       │
+│  - NO cascading (unlike classic timer wheel)                │
+│  - pending_map bitmap enables fast next-expiry scanning     │
 │  - Near timers have better resolution                       │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -327,9 +349,23 @@ enum hrtimer_restart {
 ### hrtimer API
 
 ```c
-/* Initialize */
+/* Initialize (traditional) */
 hrtimer_init(&hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 hr_timer.function = my_hrtimer_callback;
+
+/* Initialize (preferred in new code) */
+hrtimer_setup(&hr_timer, my_hrtimer_callback,
+              CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+
+/* Timer modes (can be combined with |) */
+enum hrtimer_mode {
+    HRTIMER_MODE_ABS      = 0x00,  /* Absolute time */
+    HRTIMER_MODE_REL      = 0x01,  /* Relative to now */
+    HRTIMER_MODE_PINNED   = 0x02,  /* Pinned to CPU */
+    HRTIMER_MODE_SOFT     = 0x04,  /* Soft IRQ context */
+    HRTIMER_MODE_HARD     = 0x08,  /* Hard IRQ context */
+    /* Combinations: REL_PINNED, ABS_SOFT, REL_SOFT, ABS_HARD, etc. */
+};
 
 /* Start timer */
 hrtimer_start(&hr_timer, ktime_set(1, 0), HRTIMER_MODE_REL);
@@ -749,7 +785,7 @@ void tick_nohz_idle_retain_tick(void);
 
 /* Microsecond delay (busy wait) */
 void udelay(unsigned long usecs);       /* Up to ~1000 us */
-void ndelay(unsigned long nsecs);       /* Nanoseconds */
+void ndelay(unsigned long nsecs);       /* Rounds up to microseconds internally */
 void mdelay(unsigned long msecs);       /* Milliseconds (use sparingly!) */
 
 /* These spin and waste CPU, blocking all other work */
@@ -778,9 +814,27 @@ unsigned long msleep_interruptible(unsigned int msecs);
 void usleep_range(unsigned long min, unsigned long max);
 /* Provides slack for timer coalescing, saves power */
 
+/* Additional sleep variants */
+void usleep_range_state(unsigned long min, unsigned long max,
+                        unsigned int state);  /* Specify task state */
+void usleep_range_idle(unsigned long min, unsigned long max);
+/* TASK_IDLE state - doesn't contribute to load average */
+
+/* Unified smart sleep function (new, preferred) */
+static inline void fsleep(unsigned long usecs);
+/*
+ * Auto-selects the best sleep mechanism:
+ * <= 10 us:              udelay() (avoid hrtimer overhead)
+ * < USLEEP_RANGE_UPPER:  usleep_range() with ~25% slack
+ * >= USLEEP_RANGE_UPPER: msleep()
+ */
+
 /* Example */
 msleep(100);                          /* Sleep ~100ms */
 usleep_range(1000, 1100);             /* Sleep 1-1.1ms */
+fsleep(500);                          /* Auto: udelay for this range */
+fsleep(50000);                        /* Auto: usleep_range */
+fsleep(200000);                       /* Auto: msleep */
 ```
 
 ### schedule_timeout
@@ -811,8 +865,9 @@ timeout = schedule_timeout(timeout);
 │  ────────        ──────────     ───────────                 │
 │  < 10 us         Yes            udelay()                    │
 │  10-20 us        Yes            udelay() or usleep_range()  │
-│  > 20 us         No             usleep_range()              │
-│  > 10 ms         No             msleep() or msleep_int()    │
+│  > 20 us         No             usleep_range() or fsleep()  │
+│  > 10 ms         No             msleep() or fsleep()        │
+│  Any (auto)      No             fsleep() (unified)          │
 │                                                             │
 │  Key rules:                                                 │
 │  - Atomic context (spinlock, IRQ): Only udelay/ndelay       │
@@ -921,6 +976,116 @@ struct timespec64 ts = ktime_to_timespec64(kt);
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Timekeeper Internals
+
+The `struct timekeeper` (include/linux/timekeeper_internal.h) is the kernel's
+central timekeeping structure, cacheline-optimized for fast reads:
+
+```c
+struct timekeeper {
+    struct tk_read_base tkr_mono;       /* CLOCK_MONOTONIC readout base */
+    u64             xtime_sec;          /* CLOCK_REALTIME seconds */
+    unsigned long   ktime_sec;          /* CLOCK_MONOTONIC seconds */
+    struct timespec64 wall_to_monotonic;
+    ktime_t         offs_real;          /* Monotonic → realtime offset */
+    ktime_t         offs_boot;          /* Monotonic → boottime offset */
+    ktime_t         offs_tai;           /* Monotonic → TAI offset */
+    s32             tai_offset;
+    struct tk_read_base tkr_raw;        /* CLOCK_MONOTONIC_RAW readout */
+    /* ... NTP and internal fields ... */
+};
+
+struct tk_read_base {
+    struct clocksource  *clock;
+    u64                 mask;
+    u64                 cycle_last;
+    u32                 mult;
+    u32                 shift;
+    u64                 xtime_nsec;
+    ktime_t             base;
+    u64                 base_real;       /* For NMI-safe CLOCK_REALTIME */
+};
+```
+
+**VDSO fast path**: `clock_gettime()` is implemented in userspace via VDSO
+(Virtual Dynamic Shared Object), avoiding syscall overhead entirely. The kernel
+updates VDSO data each tick via `update_vsyscall()`.
+
+**NMI-safe timekeeper**: A `struct tk_fast` with double-buffered `tk_read_base`
+arrays (`tk_fast_mono`, `tk_fast_raw`) allows lock-free reads from NMI context
+using a seqcount latch design.
+
+---
+
+## POSIX Timers
+
+POSIX timers provide userspace timer functionality via `timer_create()`,
+`timer_settime()`, `timer_gettime()`, and `timer_delete()`.
+
+### Implementation (kernel/time/posix-timers.c)
+
+```c
+/* Supported clocks dispatch via struct k_clock */
+/* Each clock type registers timer_create, timer_set, timer_get,
+ * timer_del, clock_gettime, clock_settime, nsleep callbacks */
+
+/* Timers stored in 9-bit hash table keyed on (signal_struct, timer_id) */
+static DEFINE_HASHTABLE(posix_timers_hashtable, 9);
+
+/* Supported clocks: CLOCK_REALTIME, CLOCK_MONOTONIC,
+ * CLOCK_BOOTTIME, CLOCK_TAI, CLOCK_PROCESS_CPUTIME_ID,
+ * CLOCK_THREAD_CPUTIME_ID */
+
+/* clock_nanosleep() ultimately calls hrtimer_nanosleep()
+ * for all hardware clocks */
+```
+
+---
+
+## timerfd
+
+timerfd provides timer notifications via file descriptors, integrable with
+poll/epoll/io_uring for event-driven programming.
+
+### Implementation (fs/timerfd.c)
+
+```c
+struct timerfd_ctx {
+    union {
+        struct hrtimer tmr;     /* Regular clocks */
+        struct alarm alarm;     /* CLOCK_*_ALARM clocks */
+    } t;
+    ktime_t tintv;              /* Interval for periodic timers */
+    ktime_t moffs;              /* Monotonic offset at last set */
+    wait_queue_head_t wqh;
+    u64 ticks;                  /* Expiration count (read resets) */
+    int clockid;
+    short unsigned expired;
+    short unsigned settime_flags;
+    struct rcu_head rcu;
+    struct list_head clist;     /* Cancel list for CANCEL_ON_SET */
+    spinlock_t cancel_lock;
+    bool might_cancel;
+};
+
+/* Supported flags */
+#define TFD_TIMER_ABSTIME       (1 << 0)
+#define TFD_TIMER_CANCEL_ON_SET (1 << 1)  /* Cancel on clock_settime */
+#define TFD_CLOEXEC             O_CLOEXEC
+#define TFD_NONBLOCK            O_NONBLOCK
+
+/* Syscalls */
+int timerfd_create(int clockid, int flags);
+int timerfd_settime(int fd, int flags,
+                    const struct itimerspec64 *new,
+                    struct itimerspec64 *old);
+int timerfd_gettime(int fd, struct itimerspec64 *cur);
+
+/* Additional clocks supported:
+ * CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM
+ * (wakeup-capable, use alarm subsystem instead of hrtimers) */
+```
+
 ---
 
 ## Summary
@@ -930,15 +1095,20 @@ The Linux timer subsystem provides multiple layers of abstraction:
 | Component | Purpose | Resolution |
 |-----------|---------|------------|
 | jiffies | System tick counter | 1-10 ms (HZ dependent) |
-| timer_list | Coarse-grained timeouts | Jiffies |
+| timer_list | Coarse-grained timeouts | Jiffies (9-level wheel) |
 | hrtimer | High-precision timers | Nanoseconds |
 | clocksource | Time reading | Hardware dependent |
 | clockevent | Interrupt generation | Hardware dependent |
 | NO_HZ | Power-efficient ticks | N/A |
+| POSIX timers | Userspace timer API | Nanoseconds |
+| timerfd | Timer via file descriptor | Nanoseconds |
 
 Key principles:
 - Use the coarsest-grained timer that meets your needs
 - Prefer sleep over busy-wait
+- Use fsleep() for auto-selecting the best sleep mechanism
 - Use usleep_range() for power efficiency
 - hrtimers for sub-millisecond precision
+- Prefer hrtimer_setup() over hrtimer_init() in new code
+- Prefer timer_delete_sync() over del_timer_sync() in new code
 - Consider NO_HZ impact for latency-sensitive applications
