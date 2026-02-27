@@ -2,7 +2,12 @@
 
 ## Overview
 
-The Linux Security Module (LSM) framework provides a hook-based infrastructure that allows multiple security modules to enforce mandatory access control policies. The framework supports stacking multiple LSMs, each intercepting security-relevant kernel operations. Built-in modules include capabilities (POSIX), SELinux, AppArmor, Landlock, seccomp, and BPF LSM. The integrity subsystem (IMA/EVM) provides file measurement and verification.
+The Linux Security Module (LSM) framework provides a hook-based infrastructure
+that allows multiple security modules to enforce mandatory access control
+policies. The framework supports stacking multiple LSMs, each intercepting
+security-relevant kernel operations. Built-in modules include capabilities
+(POSIX), SELinux, AppArmor, Landlock, seccomp, and BPF LSM. The integrity
+subsystem (IMA/EVM) provides file measurement and verification.
 
 ---
 
@@ -10,13 +15,15 @@ The Linux Security Module (LSM) framework provides a hook-based infrastructure t
 
 ### Hook Infrastructure
 
-All hooks are defined using the `LSM_HOOK` macro in `include/linux/lsm_hook_defs.h`:
+All hooks are defined using the `LSM_HOOK` macro in
+`include/linux/lsm_hook_defs.h`:
 
 ```c
 LSM_HOOK(<return_type>, <default_value>, <hook_name>, args...)
 ```
 
-This file is `#include`-d repeatedly with different macro definitions to generate data structures, static calls, and the dispatch table simultaneously.
+This file is `#include`-d repeatedly with different macro definitions to
+generate data structures, static calls, and the dispatch table simultaneously.
 
 ### Key Data Structures
 
@@ -64,7 +71,9 @@ struct lsm_blob_sizes {
 };
 ```
 
-The framework accumulates these at init to allocate single contiguous blobs. Each LSM accesses its portion by adding its pre-computed offset to the base pointer.
+The framework accumulates these at init to allocate single contiguous blobs.
+Each LSM accesses its portion by adding its pre-computed offset to the base
+pointer.
 
 #### `struct lsm_info`
 
@@ -81,11 +90,15 @@ struct lsm_info {
 };
 ```
 
-LSMs register via `DEFINE_LSM(name)` which places `lsm_info` in the `.lsm_info.init` linker section. Early LSMs use `DEFINE_EARLY_LSM`.
+LSMs register via `DEFINE_LSM(name)` which places `lsm_info` in the
+`.lsm_info.init` linker section. Early LSMs use `DEFINE_EARLY_LSM`.
 
 ### Static Call Dispatch
 
-Rather than linked-list traversal, the framework uses kernel static calls. Each hook has up to `MAX_LSM_COUNT` slots. The dispatch unrolls into a compile-time loop of static calls guarded by `static_key_false` branch checks — equivalent to inlined direct calls at runtime with no indirection overhead.
+Rather than linked-list traversal, the framework uses kernel static calls. Each
+hook has up to `MAX_LSM_COUNT` slots. The dispatch unrolls into a compile-time
+loop of static calls guarded by `static_key_false` branch checks — equivalent
+to inlined direct calls at runtime with no indirection overhead.
 
 ### Hook Registration
 
@@ -96,7 +109,8 @@ void __init security_add_hooks(struct security_hook_list *hooks, int count,
                                const struct lsm_id *lsmid);
 ```
 
-Fills the first unused `lsm_static_call` slot for each hook via `__static_call_update()` and `static_branch_enable()`.
+Fills the first unused `lsm_static_call` slot for each hook via
+`__static_call_update()` and `static_branch_enable()`.
 
 ### Initialization Order
 
@@ -131,7 +145,10 @@ static inline struct task_security_struct *selinux_cred(const struct cred *cred)
 
 `security/bpf/hooks.c`
 
-Registers a stub hook for every hook point in `lsm_hook_defs.h`. These stubs are BPF trampolines — `BPF_PROG_TYPE_LSM` programs attach to these attachment points. Enables runtime-programmable security policy without kernel recompilation.
+Registers a stub hook for every hook point in `lsm_hook_defs.h`. These stubs
+are BPF trampolines — `BPF_PROG_TYPE_LSM` programs attach to these attachment
+points. Enables runtime-programmable security policy without kernel
+recompilation.
 
 ---
 
@@ -263,11 +280,16 @@ CAP_MAC_ADMIN        33  // MAC administration
 
 ### File Capabilities
 
-Stored in `security.capability` xattr as `struct vfs_ns_cap_data`. Read during `execve()` via `cap_bprm_creds_from_file()` in `security/commoncap.c`. File's permitted/inheritable sets are intersected with bounding set and process's inheritable set to derive the new permitted set.
+Stored in `security.capability` xattr as `struct vfs_ns_cap_data`. Read during
+`execve()` via `cap_bprm_creds_from_file()` in `security/commoncap.c`. File's
+permitted/inheritable sets are intersected with bounding set and process's
+inheritable set to derive the new permitted set.
 
 ### The commoncap Module
 
-`security/commoncap.c` — always loaded at `LSM_ORDER_FIRST`. Implements default POSIX capability semantics for `capable`, `capget`, `capset`, `ptrace_access_check`, `bprm_creds_from_file`, etc.
+`security/commoncap.c` — always loaded at `LSM_ORDER_FIRST`. Implements default
+POSIX capability semantics for `capable`, `capget`, `capset`,
+`ptrace_access_check`, `bprm_creds_from_file`, etc.
 
 ---
 
@@ -326,7 +348,8 @@ struct avc_entry {
 };
 ```
 
-**`avc_has_perm()`**: Main check function. Hash lookup → on miss, calls `security_compute_av()` in the policy server → populates cache.
+**`avc_has_perm()`**: Main check function. Hash lookup → on miss, calls
+`security_compute_av()` in the policy server → populates cache.
 
 ### Key Hooks
 
@@ -343,7 +366,9 @@ struct avc_entry {
 
 ### Architecture
 
-Profile-based MAC using **path-based** access control (not inode-based like SELinux). Profiles contain compiled DFA patterns matched against resolved file paths.
+Profile-based MAC using **path-based** access control (not inode-based like
+SELinux). Profiles contain compiled DFA patterns matched against resolved file
+paths.
 
 ### Key Structures
 
@@ -382,14 +407,17 @@ struct aa_policydb {
 
 ### Path Resolution
 
-At hook time, AppArmor computes the full path (`aa_path_name()`) and runs it through the profile's DFA. Implications:
+At hook time, AppArmor computes the full path (`aa_path_name()`) and runs it
+through the profile's DFA. Implications:
 - Hard links can bypass rules if the alternative path isn't covered
 - Bind mounts can expose files under different paths with different permissions
 - File moves change permissions dynamically
 
 ### Profile Loading
 
-Via `/sys/kernel/security/apparmor/.load`. `apparmor_parser` compiles profile text into binary DFAs. Domain transitions on exec defined by `ix` (inline), `px` (profile), `cx` (child), `ux` (unconfined) rules.
+Via `/sys/kernel/security/apparmor/.load`. `apparmor_parser` compiles profile
+text into binary DFAs. Domain transitions on exec defined by `ix` (inline),
+`px` (profile), `cx` (child), `ux` (unconfined) rules.
 
 ---
 
@@ -430,7 +458,8 @@ struct seccomp_filter {
 };
 ```
 
-Filters form a linked list via `->prev`. Inherited on `fork()`, new filters prepended. All filters always evaluated.
+Filters form a linked list via `->prev`. Inherited on `fork()`, new filters
+prepended. All filters always evaluated.
 
 ### Filter Input
 
@@ -493,9 +522,11 @@ void revert_creds(const struct cred *);    // undo override
 struct cred *prepare_kernel_cred(...);     // kernel credentials
 ```
 
-**`prepare_creds()`**: Allocates new cred, copies all fields, increments references, allocates LSM blob via `security_prepare_creds()`.
+**`prepare_creds()`**: Allocates new cred, copies all fields, increments
+references, allocates LSM blob via `security_prepare_creds()`.
 
-**`commit_creds()`**: Atomically installs via `rcu_assign_pointer()` to both `task->real_cred` and `task->cred`. Puts old credentials.
+**`commit_creds()`**: Atomically installs via `rcu_assign_pointer()` to both
+`task->real_cred` and `task->cred`. Puts old credentials.
 
 ### RCU Protection
 
@@ -612,7 +643,9 @@ At enforcement time:
 
 `security/integrity/ima/`
 
-**Purpose**: Measures file content hashes and extends them into TPM PCR (typically PCR 10), creating an immutable measurement log. Supports appraisal (refusing files whose hash doesn't match stored signature).
+**Purpose**: Measures file content hashes and extends them into TPM PCR
+(typically PCR 10), creating an immutable measurement log. Supports appraisal
+(refusing files whose hash doesn't match stored signature).
 
 **Measurement flow**:
 1. On file open/exec, check IMA policy for measurement requirement
@@ -631,13 +664,16 @@ IMA_AUDIT      0x40  // must audit
 IMA_HASH       0x100 // must hash
 ```
 
-**Appraisal**: Checks `security.ima` xattr against computed hash. Xattr contains hash or digital signature (`IMA_XATTR_DIGEST`, `EVM_IMA_XATTR_DIGSIG`, `IMA_VERITY_DIGSIG`).
+**Appraisal**: Checks `security.ima` xattr against computed hash. Xattr
+contains hash or digital signature (`IMA_XATTR_DIGEST`, `EVM_IMA_XATTR_DIGSIG`,
+`IMA_VERITY_DIGSIG`).
 
 ### EVM (Extended Verification Module)
 
 `security/integrity/evm/`
 
-**Purpose**: Protects security xattrs from offline tampering by computing HMAC or digital signature over them.
+**Purpose**: Protects security xattrs from offline tampering by computing HMAC
+or digital signature over them.
 
 **Protected xattrs**:
 - `security.selinux`
@@ -646,7 +682,8 @@ IMA_HASH       0x100 // must hash
 - `security.capability`
 - `security.smack`
 
-The `security.evm` xattr stores an HMAC of all protected xattrs plus inode metadata. On read, EVM verifies this HMAC to detect tampering.
+The `security.evm` xattr stores an HMAC of all protected xattrs plus inode
+metadata. On read, EVM verifies this HMAC to detect tampering.
 
 ---
 

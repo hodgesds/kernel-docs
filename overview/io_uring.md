@@ -2,7 +2,10 @@
 
 ## Overview
 
-io_uring is a high-performance asynchronous I/O interface using shared-memory ring buffers between kernel and userspace. It eliminates per-operation syscall overhead by batching submissions and completions through lock-free rings, with optional kernel-side polling to avoid syscalls entirely.
+io_uring is a high-performance asynchronous I/O interface using shared-memory
+ring buffers between kernel and userspace. It eliminates per-operation syscall
+overhead by batching submissions and completions through lock-free rings, with
+optional kernel-side polling to avoid syscalls entirely.
 
 ---
 
@@ -44,7 +47,9 @@ struct io_rings {
 - Kernel writes `sq.head` (consumption), userspace writes `sq.tail` (production)
 - Kernel writes `cq.tail` (production), userspace writes `cq.head` (consumption)
 
-**SQ array indirection**: By default, `sq_array[sq.head & mask]` indexes into the SQE array, allowing userspace to reorder submission. `IORING_SETUP_NO_SQARRAY` eliminates this indirection for sequential access.
+**SQ array indirection**: By default, `sq_array[sq.head & mask]` indexes into
+the SQE array, allowing userspace to reorder submission.
+`IORING_SETUP_NO_SQARRAY` eliminates this indirection for sequential access.
 
 `sq_flags` bits (written by kernel):
 - `IORING_SQ_NEED_WAKEUP` — SQPOLL thread needs waking
@@ -257,7 +262,9 @@ Completions accumulate in `submit_state.compl_reqs`, flushed by `__io_submit_flu
 
 ### CQE Overflow
 
-When CQ ring is full, `io_cqring_event_overflow()` allocates `io_overflow_cqe` on heap, appends to `ctx->cq_overflow_list`, sets `IORING_SQ_CQ_OVERFLOW`. Drained when space becomes available.
+When CQ ring is full, `io_cqring_event_overflow()` allocates `io_overflow_cqe`
+on heap, appends to `ctx->cq_overflow_list`, sets `IORING_SQ_CQ_OVERFLOW`.
+Drained when space becomes available.
 
 ### Task Work
 
@@ -269,7 +276,8 @@ For completions from non-submitter contexts (IRQ, foreign task):
 
 ### IOPOLL Completion
 
-No interrupts. Requests placed on `ctx->iopoll_list`. Kernel polls via `blk_poll()` / `io_do_iopoll()` in the enter syscall or SQPOLL loop.
+No interrupts. Requests placed on `ctx->iopoll_list`. Kernel polls via
+`blk_poll()` / `io_do_iopoll()` in the enter syscall or SQPOLL loop.
 
 ---
 
@@ -350,7 +358,9 @@ struct io_file_table {
 
 Each slot is an `io_rsrc_node` containing a tagged file pointer with `FFS_NOWAIT`/`FFS_ISREG` flags in low bits.
 
-**Key benefit**: Avoids `fget()`/`fput()` per request. The reference is held for the table entry's lifetime. Fast-path: `io_file_get_fixed()` does direct array lookup + reference count increment on the rsrc node.
+**Key benefit**: Avoids `fget()`/`fput()` per request. The reference is held
+for the table entry's lifetime. Fast-path: `io_file_get_fixed()` does direct
+    array lookup + reference count increment on the rsrc node.
 
 Direct fd auto-allocation: `IORING_FILE_INDEX_ALLOC` in `sqe->file_index` scans bitmap for free slot.
 
@@ -401,7 +411,9 @@ Selection via `IO_WQ_WORK_UNBOUND` flag on the work item.
 
 ### Worker Lifecycle
 
-Workers created via `create_io_thread()`, run `io_wqe_worker()` loop. Idle for 5 seconds (`WORKER_IDLE_TIMEOUT`), then exit. Identified by `PF_IO_WORKER` in `task->flags`.
+Workers created via `create_io_thread()`, run `io_wqe_worker()` loop. Idle for
+5 seconds (`WORKER_IDLE_TIMEOUT`), then exit. Identified by `PF_IO_WORKER` in
+`task->flags`.
 
 Work dispatch: `io_wq_enqueue()` → wake idle worker or spawn new (up to `max_workers`).
 
@@ -411,7 +423,8 @@ Work dispatch: `io_wq_enqueue()` → wake idle worker or spawn new (up to `max_w
 
 ### Chain Assembly
 
-In `io_submit_sqe()`, `IOSQE_IO_LINK` or `IOSQE_IO_HARDLINK` builds a chain via `req->link` pointers. Chain is flushed when a non-link SQE is encountered.
+In `io_submit_sqe()`, `IOSQE_IO_LINK` or `IOSQE_IO_HARDLINK` builds a chain via
+`req->link` pointers. Chain is flushed when a non-link SQE is encountered.
 
 ### Execution
 
@@ -423,13 +436,16 @@ Head issued first. On completion, `io_req_find_next()` retrieves `req->link` and
 
 ### Link Timeout
 
-`IORING_OP_LINK_TIMEOUT` must follow target SQE in chain. Arms an hrtimer that cancels the preceding request if it doesn't complete in time. Disarmed on normal completion.
+`IORING_OP_LINK_TIMEOUT` must follow target SQE in chain. Arms an hrtimer that
+cancels the preceding request if it doesn't complete in time. Disarmed on
+normal completion.
 
 ---
 
 ## Multishot Operations
 
-Multishot requests generate multiple CQEs from a single SQE submission. Each CQE has `IORING_CQE_F_MORE` until the operation terminates.
+Multishot requests generate multiple CQEs from a single SQE submission. Each
+CQE has `IORING_CQE_F_MORE` until the operation terminates.
 
 | Operation | Trigger | Description |
 |-----------|---------|-------------|
@@ -470,7 +486,8 @@ Multiple rings share a single `io_sq_data` via `IORING_SETUP_ATTACH_WQ`.
 4. If no work: set `IORING_SQ_NEED_WAKEUP`, sleep
 5. On wake or new entries: clear flag, resume
 
-Userspace must check `IORING_SQ_NEED_WAKEUP` after writing SQ tail (with `smp_mb()` barrier) and call `io_uring_enter(IORING_ENTER_SQ_WAKEUP)` if set.
+Userspace must check `IORING_SQ_NEED_WAKEUP` after writing SQ tail (with
+`smp_mb()` barrier) and call `io_uring_enter(IORING_ENTER_SQ_WAKEUP)` if set.
 
 ---
 
@@ -478,7 +495,9 @@ Userspace must check `IORING_SQ_NEED_WAKEUP` after writing SQ tail (with `smp_mb
 
 ### Legacy: `IORING_OP_PROVIDE_BUFFERS`
 
-Buffers registered per group. Each `struct io_buffer` has a buffer ID. At issue time with `IOSQE_BUFFER_SELECT`, a buffer is popped from the group. Buffer ID reported in `cqe->flags >> 16`.
+Buffers registered per group. Each `struct io_buffer` has a buffer ID. At issue
+time with `IOSQE_BUFFER_SELECT`, a buffer is popped from the group. Buffer ID
+reported in `cqe->flags >> 16`.
 
 ### Buffer Rings: `IORING_REGISTER_PBUF_RING`
 
@@ -499,9 +518,12 @@ struct io_uring_buf_ring {
 };
 ```
 
-Userspace advances `tail` to add buffers; kernel reads from `head`. The `tail` field overlaps `bufs[0].resv` — zero extra space for the ring header.
+Userspace advances `tail` to add buffers; kernel reads from `head`. The `tail`
+field overlaps `bufs[0].resv` — zero extra space for the ring header.
 
-`IOBL_INC` flag: incremental consumption — kernel tracks sub-offset, partially consuming large buffers. `IORING_CQE_F_BUF_MORE` set when buffer not fully consumed.
+`IOBL_INC` flag: incremental consumption — kernel tracks sub-offset, partially
+consuming large buffers. `IORING_CQE_F_BUF_MORE` set when buffer not fully
+consumed.
 
 ---
 
@@ -533,7 +555,9 @@ Synchronous cancel via register path with timeout.
 
 ## Registered Ring FDs
 
-`IORING_REGISTER_RING_FDS` stores ring's `struct file *` in `tctx->registered_rings[]` (16 slots). `IORING_ENTER_REGISTERED_RING` skips `fget()` — direct array lookup.
+`IORING_REGISTER_RING_FDS` stores ring's `struct file *` in
+`tctx->registered_rings[]` (16 slots). `IORING_ENTER_REGISTERED_RING` skips
+`fget()` — direct array lookup.
 
 `IORING_SETUP_REGISTERED_FD_ONLY`: setup returns registered index (not fd). Combined with `NO_MMAP` + `NO_SQARRAY` for minimum overhead.
 
@@ -601,7 +625,8 @@ struct io_issue_def {
 | `ctx->timeout_lock` | raw_spinlock | Timeout lists |
 | `sqd->lock` | mutex | SQPOLL park/stop |
 
-"Lockless CQ" with `DEFER_TASKRUN`: all CQE posts from submitter task under `uring_lock`, no `completion_lock` needed.
+"Lockless CQ" with `DEFER_TASKRUN`: all CQE posts from submitter task under
+`uring_lock`, no `completion_lock` needed.
 
 ---
 

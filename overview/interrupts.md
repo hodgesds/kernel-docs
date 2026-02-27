@@ -2,13 +2,20 @@
 
 ## Overview
 
-The Linux interrupt subsystem handles hardware-generated signals and software-deferred work through a layered architecture. Hardware signals enter through architecture-specific entry stubs, pass through the Generic IRQ layer (`kernel/irq/`), invoke per-IRQ chip operations, and execute registered action handlers. Deferred work is split among softirqs, tasklets, workqueues, and threaded IRQ handlers using a top-half/bottom-half design.
+The Linux interrupt subsystem handles hardware-generated signals and
+software-deferred work through a layered architecture. Hardware signals enter
+through architecture-specific entry stubs, pass through the Generic IRQ layer
+(`kernel/irq/`), invoke per-IRQ chip operations, and execute registered action
+handlers. Deferred work is split among softirqs, tasklets, workqueues, and
+threaded IRQ handlers using a top-half/bottom-half design.
 
 ## Architecture
 
 ### Top-Half / Bottom-Half Split
 
-**Top half (hardirq)**: Executes immediately in interrupt context with interrupts disabled on the local CPU. Must be fast — typically acknowledges the hardware and schedules deferred work.
+**Top half (hardirq)**: Executes immediately in interrupt context with
+interrupts disabled on the local CPU. Must be fast — typically acknowledges the
+hardware and schedules deferred work.
 
 **Bottom half**: Deferred work that runs with interrupts re-enabled. Four mechanisms:
 - **Softirqs** — statically allocated, per-CPU, highest performance
@@ -18,7 +25,8 @@ The Linux interrupt subsystem handles hardware-generated signals and software-de
 
 ### Context Tracking via `preempt_count`
 
-The `preempt_count` word (`include/linux/preempt.h`) encodes the current execution context in distinct bit fields:
+The `preempt_count` word (`include/linux/preempt.h`) encodes the current
+execution context in distinct bit fields:
 
 | Field | Meaning |
 |-------|---------|
@@ -64,7 +72,8 @@ SPURIOUS_APIC_VECTOR        0xff   // spurious APIC
 
 ### Generic IRQ Architecture
 
-The Generic IRQ layer (`kernel/irq/`) provides architecture-independent interrupt management. The architecture registers a top-level handler:
+The Generic IRQ layer (`kernel/irq/`) provides architecture-independent
+interrupt management. The architecture registers a top-level handler:
 
 ```c
 // kernel/irq/handle.c
@@ -72,7 +81,8 @@ void (*handle_arch_irq)(struct pt_regs *) __ro_after_init;
 int __init set_handle_irq(void (*handle_irq)(struct pt_regs *));
 ```
 
-On entry, `generic_handle_arch_irq()` (`kernel/irq/handle.c:232`) calls `irq_enter()`, dispatches via `handle_arch_irq(regs)`, then calls `irq_exit()`.
+On entry, `generic_handle_arch_irq()` (`kernel/irq/handle.c:232`) calls
+`irq_enter()`, dispatches via `handle_arch_irq(regs)`, then calls `irq_exit()`.
 
 ---
 
@@ -106,7 +116,9 @@ struct irq_desc {
 };
 ```
 
-With `CONFIG_SPARSE_IRQ` (default), descriptors are dynamically allocated and stored in a maple tree accessed via `irq_to_desc(irq)`. Without it, a static array `irq_desc[NR_IRQS]` is used.
+With `CONFIG_SPARSE_IRQ` (default), descriptors are dynamically allocated and
+stored in a maple tree accessed via `irq_to_desc(irq)`. Without it, a static
+array `irq_desc[NR_IRQS]` is used.
 
 ### `struct irq_chip` — Interrupt Controller Operations
 
@@ -258,11 +270,16 @@ struct irqaction {
 
 All in `kernel/irq/chip.c`:
 
-**`handle_fasteoi_irq`**: Used for modern APICs. Runs handlers, then calls `irq_chip->irq_eoi()`. No explicit mask/unmask — the hardware holds off re-delivery.
+**`handle_fasteoi_irq`**: Used for modern APICs. Runs handlers, then calls
+`irq_chip->irq_eoi()`. No explicit mask/unmask — the hardware holds off
+re-delivery.
 
-**`handle_edge_irq`**: Acks immediately via `irq_ack`, runs handlers. Re-triggers if a new edge arrived during handling. Must handle the case where edges queue while handling.
+**`handle_edge_irq`**: Acks immediately via `irq_ack`, runs handlers.
+Re-triggers if a new edge arrived during handling. Must handle the case where
+edges queue while handling.
 
-**`handle_level_irq`**: Masks on entry, runs handlers, unmasks on exit. Handles the case where the interrupt line remains asserted.
+**`handle_level_irq`**: Masks on entry, runs handlers, unmasks on exit. Handles
+the case where the interrupt line remains asserted.
 
 ---
 
@@ -288,7 +305,8 @@ enum {
 };
 ```
 
-The handler array: `static struct softirq_action softirq_vec[NR_SOFTIRQS]` at `kernel/softirq.c:60`.
+The handler array: `static struct softirq_action softirq_vec[NR_SOFTIRQS]` at
+`kernel/softirq.c:60`.
 
 ### Raising and Processing
 
@@ -317,8 +335,10 @@ void open_softirq(int nr, void (*action)(void));
 7. If still pending, wake `ksoftirqd`
 
 Softirqs run from two contexts:
-- **`irq_exit()`** — after every hardirq, if softirqs are pending and we're returning to non-interrupt context
-- **`ksoftirqd`** — per-CPU kernel thread (`ksoftirqd/%u`), runs at `SCHED_OTHER` priority
+- **`irq_exit()`** — after every hardirq, if softirqs are pending and we're
+  returning to non-interrupt context
+- **`ksoftirqd`** — per-CPU kernel thread (`ksoftirqd/%u`), runs at
+  `SCHED_OTHER` priority
 
 ### `ksoftirqd`
 
@@ -337,9 +357,11 @@ Handles overflow when inline softirq processing runs too long (>2ms or >10 resta
 
 ## Tasklets
 
-Built on `HI_SOFTIRQ` and `TASKLET_SOFTIRQ`. Provide per-tasklet serialization — a given tasklet runs on only one CPU at a time.
+Built on `HI_SOFTIRQ` and `TASKLET_SOFTIRQ`. Provide per-tasklet serialization
+— a given tasklet runs on only one CPU at a time.
 
-**Note**: Tasklets are deprecated for new code (`include/linux/interrupt.h:674-676`). Use threaded IRQs instead.
+**Note**: Tasklets are deprecated for new code
+(`include/linux/interrupt.h:674-676`). Use threaded IRQs instead.
 
 ### Data Structure
 
@@ -389,7 +411,8 @@ tasklet_kill(t);           // wait + prevent re-scheduling
 
 ## Workqueues
 
-Execute deferred work in process context via managed kernel thread pools (`kworker/...`). The primary mechanism for deferred work that needs to sleep.
+Execute deferred work in process context via managed kernel thread pools
+(`kworker/...`). The primary mechanism for deferred work that needs to sleep.
 
 ### Core Structures
 
@@ -642,7 +665,9 @@ typedef enum irqreturn {
 
 ## MSI / MSI-X
 
-Message Signaled Interrupts replace pin-based signaling. The device writes a data word to a memory address (LAPIC on x86) instead of asserting a physical line. MSI-X supports up to 2048 vectors per device with independent masking.
+Message Signaled Interrupts replace pin-based signaling. The device writes a
+data word to a memory address (LAPIC on x86) instead of asserting a physical
+line. MSI-X supports up to 2048 vectors per device with independent masking.
 
 ### MSI Message
 
@@ -669,9 +694,11 @@ MSI uses hierarchical IRQ domains:
 
 ### Hierarchical IRQ Domains
 
-Modern interrupt controllers form hierarchies (GPIO → GIC → CPU). Each level has its own domain and chip. `irq_data->parent_data` links the levels.
+Modern interrupt controllers form hierarchies (GPIO → GIC → CPU). Each level
+has its own domain and chip. `irq_data->parent_data` links the levels.
 
-Activation walks up the chain calling each domain's `activate()`. Helper functions for hierarchical chips:
+Activation walks up the chain calling each domain's `activate()`. Helper
+functions for hierarchical chips:
 ```c
 irq_chip_enable_parent()      irq_chip_mask_parent()
 irq_chip_disable_parent()     irq_chip_unmask_parent()
@@ -681,19 +708,27 @@ irq_chip_set_affinity_parent()
 
 ### Generic IRQ Chip
 
-`kernel/irq/generic-chip.c` — reusable implementation for simple memory-mapped controllers. Controllers allocate `struct irq_chip_generic` and fill in register offsets for enable/disable/mask/ack.
+`kernel/irq/generic-chip.c` — reusable implementation for simple memory-mapped
+controllers. Controllers allocate `struct irq_chip_generic` and fill in
+register offsets for enable/disable/mask/ack.
 
 ### Spurious IRQ Detection
 
-`note_interrupt()` in `kernel/irq/spurious.c` — tracks `IRQ_NONE` returns. If unhandled rate exceeds threshold (10,000 out of 100,000), the IRQ is disabled with a warning. Controlled by `noirqdebug` kernel parameter.
+`note_interrupt()` in `kernel/irq/spurious.c` — tracks `IRQ_NONE` returns. If
+unhandled rate exceeds threshold (10,000 out of 100,000), the IRQ is disabled
+with a warning. Controlled by `noirqdebug` kernel parameter.
 
 ### `irq_matrix` — Vector Allocation
 
-`kernel/irq/matrix.c` — per-CPU bit matrix for allocating interrupt vectors. Used by x86's vector allocation domain. Supports managed reservations that pre-allocate across a CPU set.
+`kernel/irq/matrix.c` — per-CPU bit matrix for allocating interrupt vectors.
+Used by x86's vector allocation domain. Supports managed reservations that
+pre-allocate across a CPU set.
 
 ### `/proc/interrupts`
 
-Generated by `show_interrupts()` in `kernel/irq/proc.c`. Shows per-CPU counts, chip name, flow handler, and action names. Architecture-specific entries (NMI, LOC, etc.) appended by `arch_show_interrupts()`.
+Generated by `show_interrupts()` in `kernel/irq/proc.c`. Shows per-CPU counts,
+chip name, flow handler, and action names. Architecture-specific entries (NMI,
+LOC, etc.) appended by `arch_show_interrupts()`.
 
 ---
 

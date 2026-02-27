@@ -2,7 +2,12 @@
 
 ## Overview
 
-The Linux tracing subsystem is a multi-layered infrastructure for kernel and user-space observation. At its core is the Ftrace framework (`kernel/trace/`), which owns the ring buffer, the tracefs filesystem, and a plugin architecture for tracers. Four orthogonal instrumentation mechanisms feed into this infrastructure: static tracepoints, dynamic kprobes, user-space uprobes, and perf events. BPF programs can attach to all of these.
+The Linux tracing subsystem is a multi-layered infrastructure for kernel and
+user-space observation. At its core is the Ftrace framework (`kernel/trace/`),
+which owns the ring buffer, the tracefs filesystem, and a plugin architecture
+for tracers. Four orthogonal instrumentation mechanisms feed into this
+    infrastructure: static tracepoints, dynamic kprobes, user-space uprobes,
+    and perf events. BPF programs can attach to all of these.
 
 ---
 
@@ -14,7 +19,8 @@ The Linux tracing subsystem is a multi-layered infrastructure for kernel and use
 
 `kernel/trace/trace.h:320`
 
-The top-level object for one tracing instance (global or named instance under `/sys/kernel/tracing/instances/`):
+The top-level object for one tracing instance (global or named instance under
+`/sys/kernel/tracing/instances/`):
 
 ```c
 struct trace_array {
@@ -38,7 +44,8 @@ Global instance: `global_trace` at `kernel/trace/trace.c:499`.
 
 `kernel/trace/trace.h:576`
 
-Plugin interface — every tracer (nop, function, function_graph, irqsoff, wakeup, etc.):
+Plugin interface — every tracer (nop, function, function_graph, irqsoff,
+wakeup, etc.):
 
 ```c
 struct tracer {
@@ -92,7 +99,10 @@ Key flags:
 
 ### Dynamic Patching
 
-At build time, `gcc -pg` or `-mfentry` inserts a 5-byte `call __fentry__` at every function entry. The kernel collects these addresses into the `__mcount_loc` ELF section. At boot, `ftrace_init()` builds the `dyn_ftrace` array.
+At build time, `gcc -pg` or `-mfentry` inserts a 5-byte `call __fentry__` at
+every function entry. The kernel collects these addresses into the
+`__mcount_loc` ELF section. At boot, `ftrace_init()` builds the `dyn_ftrace`
+array.
 
 ```c
 struct dyn_ftrace {
@@ -102,7 +112,9 @@ struct dyn_ftrace {
 };
 ```
 
-When no callbacks are registered: `ftrace_make_nop()` patches to NOP. When callbacks register and filter matches: `ftrace_make_call()` patches back. Patching uses `stop_machine()` on x86.
+When no callbacks are registered: `ftrace_make_nop()` patches to NOP. When
+callbacks register and filter matches: `ftrace_make_call()` patches back.
+Patching uses `stop_machine()` on x86.
 
 ### Filter Hashes
 
@@ -212,7 +224,9 @@ struct ring_buffer_event {
 
 ### Read Path
 
-Reader uses a private `reader_page`. `rb_get_reader_page()` atomically swaps `reader_page` with `head_page` using `local_cmpxchg()`. Reader iterates events on its private page without locking.
+Reader uses a private `reader_page`. `rb_get_reader_page()` atomically swaps
+`reader_page` with `head_page` using `local_cmpxchg()`. Reader iterates events
+on its private page without locking.
 
 ---
 
@@ -232,7 +246,8 @@ struct tracepoint {
 };
 ```
 
-When no probes: `static_key_false` makes the callsite a NOP. On first probe: `static_key_enable()` patches the branch.
+When no probes: `static_key_false` makes the callsite a NOP. On first probe:
+`static_key_enable()` patches the branch.
 
 ### TRACE_EVENT Macro
 
@@ -322,7 +337,9 @@ struct kprobe {
 
 ### Ftrace-Based Kprobes
 
-When probe is at function entry (offset 0) and `CONFIG_KPROBES_ON_FTRACE`: uses ftrace callback instead of INT3. No single-stepping, lower overhead. `KPROBE_FLAG_FTRACE` set.
+When probe is at function entry (offset 0) and `CONFIG_KPROBES_ON_FTRACE`: uses
+ftrace callback instead of INT3. No single-stepping, lower overhead.
+`KPROBE_FLAG_FTRACE` set.
 
 ### `struct kretprobe`
 
@@ -336,11 +353,13 @@ struct kretprobe {
 };
 ```
 
-Saves real return address, replaces with `__kretprobe_trampoline`. On return: trampoline → `kretprobe_trampoline_handler()` → user handler → restore.
+Saves real return address, replaces with `__kretprobe_trampoline`. On return:
+trampoline → `kretprobe_trampoline_handler()` → user handler → restore.
 
 ### Blacklist
 
-`NOKPROBE_SYMBOL()` macro places functions in `__kprobe_blacklist` section. Critical sections, kprobe infrastructure, exception handlers excluded.
+`NOKPROBE_SYMBOL()` macro places functions in `__kprobe_blacklist` section.
+Critical sections, kprobe infrastructure, exception handlers excluded.
 
 ---
 
@@ -367,7 +386,8 @@ struct uprobe_consumer {
 
 ### `struct uprobe_task`
 
-Per-task state during single-step: `state`, `depth` (uretprobe nesting), `return_instances`, `xol_vaddr`, `active_uprobe`.
+Per-task state during single-step: `state`, `depth` (uretprobe nesting),
+`return_instances`, `xol_vaddr`, `active_uprobe`.
 
 ---
 
@@ -420,7 +440,9 @@ struct pmu {
 
 ### Perf Ring Buffer
 
-Separate from ftrace ring buffer. Shared with userspace via `mmap()`. `perf_output_begin()` claims space, `perf_output_sample()` writes sample, `perf_output_end()` finalizes.
+Separate from ftrace ring buffer. Shared with userspace via `mmap()`.
+`perf_output_begin()` claims space, `perf_output_sample()` writes sample,
+`perf_output_end()` finalizes.
 
 ---
 
@@ -453,7 +475,9 @@ unsigned int trace_call_bpf(struct trace_event_call *call, void *ctx) {
 
 ### Raw Tracepoints
 
-`struct bpf_raw_event_map` in `__bpf_raw_tp` ELF section links tracepoints to BPF wrappers (`__bpf_trace_NAME`). Raw tracepoints pass arguments directly as `u64 args[]` — no ring buffer formatting overhead.
+`struct bpf_raw_event_map` in `__bpf_raw_tp` ELF section links tracepoints to
+BPF wrappers (`__bpf_trace_NAME`). Raw tracepoints pass arguments directly as
+`u64 args[]` — no ring buffer formatting overhead.
 
 ### Key BPF Helpers for Tracing
 
@@ -500,7 +524,8 @@ struct fgraph_ops {
 
 ### Shadow Stack
 
-Each task has `task_struct->ret_stack` (array of `unsigned long`). Up to 16 `fgraph_ops` can be active simultaneously.
+Each task has `task_struct->ret_stack` (array of `unsigned long`). Up to 16
+`fgraph_ops` can be active simultaneously.
 
 **On entry** (`function_graph_enter()`):
 1. Save real return address
@@ -519,7 +544,8 @@ Each task has `task_struct->ret_stack` (array of `unsigned long`). Up to 16 `fgr
 
 `kernel/trace/trace_events_trigger.c`
 
-Attached to `trace_event_file->triggers` list. Executed by `event_triggers_call()` from event handlers.
+Attached to `trace_event_file->triggers` list. Executed by
+`event_triggers_call()` from event handlers.
 
 ### Available Triggers
 
@@ -539,7 +565,9 @@ Attached to `trace_event_file->triggers` list. Executed by `event_triggers_call(
 echo 'hist:keys=pid:vals=hitcount' > events/sched/sched_switch/trigger
 ```
 
-Uses `struct tracing_map` — a lock-free hashtable in `kernel/trace/tracing_map.c`. Supports variables (`$var = field`), conditional actions (`onmax()`, `onchange()`), and synthetic events.
+Uses `struct tracing_map` — a lock-free hashtable in
+`kernel/trace/tracing_map.c`. Supports variables (`$var = field`), conditional
+actions (`onmax()`, `onchange()`), and synthetic events.
 
 ---
 

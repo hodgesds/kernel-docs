@@ -2,7 +2,12 @@
 
 ## Overview
 
-Linux provides multiple inter-process communication mechanisms spanning several kernel subsystems: traditional SysV IPC objects (`ipc/`), POSIX IPC layered on VFS, pipes (`fs/pipe.c`), Unix domain sockets (`net/unix/`), signals (`kernel/signal.c`), and a family of file-descriptor-based primitives (eventfd, signalfd, timerfd, pidfd, futex, memfd, userfaultfd). Each has distinct data structures, locking strategies, and lifetime semantics.
+Linux provides multiple inter-process communication mechanisms spanning several
+kernel subsystems: traditional SysV IPC objects (`ipc/`), POSIX IPC layered on
+VFS, pipes (`fs/pipe.c`), Unix domain sockets (`net/unix/`), signals
+(`kernel/signal.c`), and a family of file-descriptor-based primitives (eventfd,
+signalfd, timerfd, pidfd, futex, memfd, userfaultfd). Each has distinct data
+structures, locking strategies, and lifetime semantics.
 
 ---
 
@@ -85,9 +90,13 @@ struct shmid_kernel {
 };
 ```
 
-**Key design**: `shm_file` points to a `shmem_fs` (tmpfs) or hugetlbfs file. `shmat()` calls `do_mmap()` on this file — all attachments share the same page cache. The wrapper `shm_vm_ops` tracks attach/detach counts.
+**Key design**: `shm_file` points to a `shmem_fs` (tmpfs) or hugetlbfs file.
+`shmat()` calls `do_mmap()` on this file — all attachments share the same page
+cache. The wrapper `shm_vm_ops` tracks attach/detach counts.
 
-**Destruction**: `IPC_RMID` with `shm_nattch > 0` sets `SHM_DEST` flag (mode bit `01000`) and makes the segment invisible to new lookups. Actual destruction happens on last detach via `shm_destroy()`.
+**Destruction**: `IPC_RMID` with `shm_nattch > 0` sets `SHM_DEST` flag (mode
+bit `01000`) and makes the segment invisible to new lookups. Actual destruction
+happens on last detach via `shm_destroy()`.
 
 #### Syscalls
 
@@ -130,11 +139,15 @@ struct sem {
 };
 ```
 
-**Two-level locking**: Simple single-semaphore operations use per-`sem` spinlocks (avoiding global contention). Complex multi-semaphore or undo operations use the array-level `kern_ipc_perm.lock`.
+**Two-level locking**: Simple single-semaphore operations use per-`sem`
+spinlocks (avoiding global contention). Complex multi-semaphore or undo
+operations use the array-level `kern_ipc_perm.lock`.
 
 #### SEM_UNDO
 
-`struct sem_undo` stores per-process `semadj[]` values. At `exit_sem()`, the kernel walks the process's undo list, applies adjustments, and wakes newly satisfiable waiters.
+`struct sem_undo` stores per-process `semadj[]` values. At `exit_sem()`, the
+kernel walks the process's undo list, applies adjustments, and wakes newly
+satisfiable waiters.
 
 ### Message Queues
 
@@ -157,7 +170,9 @@ struct msg_queue {
 };
 ```
 
-**Pipelined delivery**: If a matching receiver exists in `q_receivers`, the message is handed directly without being queued — `wake_q_add_safe()` wakes the receiver. Otherwise the message is appended to `q_messages`.
+**Pipelined delivery**: If a matching receiver exists in `q_receivers`, the
+message is handed directly without being queued — `wake_q_add_safe()` wakes the
+receiver. Otherwise the message is appended to `q_messages`.
 
 ### IPC Namespaces
 
@@ -206,7 +221,10 @@ Messages stored in red-black tree keyed by priority; within each priority, FIFO 
 
 ### POSIX Shared Memory
 
-`shm_open()` is a glibc wrapper around `open("/dev/shm/<name>", ...)` on tmpfs. No kernel-level `shmid_kernel` — lifetime follows file link count and open descriptions. Contrast with SysV which has its own ID space and `IPC_RMID` semantics.
+`shm_open()` is a glibc wrapper around `open("/dev/shm/<name>", ...)` on tmpfs.
+No kernel-level `shmid_kernel` — lifetime follows file link count and open
+descriptions. Contrast with SysV which has its own ID space and `IPC_RMID`
+semantics.
 
 ---
 
@@ -245,11 +263,14 @@ struct pipe_buffer {
 };
 ```
 
-**Ring buffer**: Uses unwrapped counters; slot index = `head & (ring_size - 1)`. Empty when `head == tail`, full when `head - tail >= max_usage`.
+**Ring buffer**: Uses unwrapped counters; slot index = `head & (ring_size -
+1)`. Empty when `head == tail`, full when `head - tail >= max_usage`.
 
-**Default capacity**: `PIPE_DEF_BUFFERS = 16` slots × `PAGE_SIZE` = 64KB. Resizable via `fcntl(F_SETPIPE_SZ)` up to `pipe_max_size` (default 1MB).
+**Default capacity**: `PIPE_DEF_BUFFERS = 16` slots × `PAGE_SIZE` = 64KB.
+Resizable via `fcntl(F_SETPIPE_SZ)` up to `pipe_max_size` (default 1MB).
 
-**Atomicity**: Writes ≤ `PIPE_BUF` (4096 bytes) are atomic — no interleaving from concurrent writers.
+**Atomicity**: Writes ≤ `PIPE_BUF` (4096 bytes) are atomic — no interleaving
+from concurrent writers.
 
 ### O_NONBLOCK Behavior
 
@@ -265,7 +286,10 @@ struct pipe_buffer {
 
 ### FIFOs (Named Pipes)
 
-Same `pipe_inode_info` as anonymous pipes, allocated via `fifo_open()` in `fs/fifo.c`. The FIFO inode lives in a real filesystem. Read and write ends opened by separate `open()` calls which block (without `O_NONBLOCK`) until both ends are open.
+Same `pipe_inode_info` as anonymous pipes, allocated via `fifo_open()` in
+`fs/fifo.c`. The FIFO inode lives in a real filesystem. Read and write ends
+opened by separate `open()` calls which block (without `O_NONBLOCK`) until both
+ends are open.
 
 ---
 
@@ -283,7 +307,8 @@ All use `AF_UNIX` / `PF_UNIX`:
 ### Addressing
 
 - **Filesystem namespace**: `bind()` creates a socket inode (`S_IFSOCK`) at the path
-- **Abstract namespace** (Linux extension): `sun_path[0] == '\0'`, remaining bytes form the name; no filesystem entry, garbage-collected on close
+- **Abstract namespace** (Linux extension): `sun_path[0] == '\0'`, remaining
+  bytes form the name; no filesystem entry, garbage-collected on close
 
 ### Credential Passing (SCM_CREDENTIALS)
 
@@ -316,7 +341,8 @@ struct scm_fp_list {
 - Receiver: `scm_detach_fds()` installs files into receiver's fd table via `receive_fd()`
 - Maximum: 253 file descriptors per message
 
-**Garbage Collection**: `net/unix/garbage.c` implements mark-and-sweep GC to detect cycles of AF_UNIX sockets holding each other's fds.
+**Garbage Collection**: `net/unix/garbage.c` implements mark-and-sweep GC to
+detect cycles of AF_UNIX sockets holding each other's fds.
 
 ---
 
@@ -352,13 +378,19 @@ struct sighand_struct {
 
 ### Delivery Path
 
-1. **`send_signal_locked()`**: acquires `sighand->siglock`, sets pending bit (standard) or allocates `sigqueue` node (RT), calls `complete_signal()` which sets `TIF_SIGPENDING` and wakes target
-2. **`get_signal()`** (`kernel/signal.c:2801`): called on return to userspace, dequeues next signal, handles stop/continue/fatal signals
+1. **`send_signal_locked()`**: acquires `sighand->siglock`, sets pending bit
+   (standard) or allocates `sigqueue` node (RT), calls `complete_signal()`
+   which sets `TIF_SIGPENDING` and wakes target
+2. **`get_signal()`** (`kernel/signal.c:2801`): called on return to userspace,
+   dequeues next signal, handles stop/continue/fatal signals
 
 ### Standard vs Real-Time Signals
 
-- **Standard (1-31)**: not queued, only bitmask bit set; multiple sends coalesce
-- **Real-time (32-64)**: fully queued via `sigqueue` nodes; carry `si_value` payload; priority ordered (lower number first); limited by `RLIMIT_SIGPENDING`
+- **Standard (1-31)**: not queued, only bitmask bit set; multiple sends
+  coalesce
+- **Real-time (32-64)**: fully queued via `sigqueue` nodes; carry `si_value`
+  payload; priority ordered (lower number first); limited by
+  `RLIMIT_SIGPENDING`
 
 ---
 
@@ -430,13 +462,19 @@ struct timerfd_ctx {
 
 ### Syscalls
 
-- **`timerfd_create(clockid, flags)`**: supports `CLOCK_MONOTONIC`, `CLOCK_REALTIME`, `CLOCK_BOOTTIME`, `CLOCK_REALTIME_ALARM`, `CLOCK_BOOTTIME_ALARM`
-- **`timerfd_settime(fd, flags, new, old)`**: `TFD_TIMER_ABSTIME`, `TFD_TIMER_CANCEL_ON_SET`
+- **`timerfd_create(clockid, flags)`**: supports `CLOCK_MONOTONIC`,
+  `CLOCK_REALTIME`, `CLOCK_BOOTTIME`, `CLOCK_REALTIME_ALARM`,
+  `CLOCK_BOOTTIME_ALARM`
+- **`timerfd_settime(fd, flags, new, old)`**: `TFD_TIMER_ABSTIME`,
+  `TFD_TIMER_CANCEL_ON_SET`
 - **`timerfd_gettime(fd, cur)`**: returns time to next expiration
 
-Timer callback (`timerfd_tmrproc`): sets `expired=1`, increments `ticks`, wakes pollers. Re-arming for periodic timers is done lazily on `read()` via `hrtimer_forward_now()`.
+Timer callback (`timerfd_tmrproc`): sets `expired=1`, increments `ticks`, wakes
+pollers. Re-arming for periodic timers is done lazily on `read()` via
+`hrtimer_forward_now()`.
 
-**CLOCK_REALTIME discontinuity**: `timerfd_clock_was_set()` iterates `cancel_list` and wakes `TFD_TIMER_CANCEL_ON_SET` timers.
+**CLOCK_REALTIME discontinuity**: `timerfd_clock_was_set()` iterates
+`cancel_list` and wakes `TFD_TIMER_CANCEL_ON_SET` timers.
 
 ---
 
@@ -540,11 +578,15 @@ struct futex_pi_state {
 
 ### futex2: `futex_waitv`
 
-`kernel/futex/syscalls.c:290` — waits on an array of up to 128 futex addresses simultaneously, returns when any one is woken. Each entry can have different size and shared/private flags.
+`kernel/futex/syscalls.c:290` — waits on an array of up to 128 futex addresses
+simultaneously, returns when any one is woken. Each entry can have different
+size and shared/private flags.
 
 ### Robust Futexes
 
-`task_struct->robust_list` — userspace `robust_list_head`. On `do_exit()`, kernel walks the list, marks each held futex with `FUTEX_OWNER_DIED`, wakes one waiter per lock.
+`task_struct->robust_list` — userspace `robust_list_head`. On `do_exit()`,
+kernel walks the list, marks each held futex with `FUTEX_OWNER_DIED`, wakes one
+waiter per lock.
 
 ---
 

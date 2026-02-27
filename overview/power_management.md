@@ -2,18 +2,19 @@
 
 ## Overview
 
-The Linux kernel power management subsystem spans CPU frequency/idle management, device
-runtime PM, system sleep states, thermal management, and energy modeling. It coordinates
-hardware power state transitions across the entire platform — from individual device D-states
-through CPU C/P-states to full system S-states.
+The Linux kernel power management subsystem spans CPU frequency/idle
+management, device runtime PM, system sleep states, thermal management, and
+energy modeling. It coordinates hardware power state transitions across the
+entire platform — from individual device D-states through CPU C/P-states to
+full system S-states.
 
 ---
 
 ## 1. CPUFreq — CPU Frequency Scaling
 
-CPUFreq manages dynamic voltage and frequency scaling (DVFS) for CPUs. A **policy** groups
-CPUs that share a clock domain; a **driver** interfaces with the hardware; a **governor**
-decides when and how to change frequency.
+CPUFreq manages dynamic voltage and frequency scaling (DVFS) for CPUs. A
+**policy** groups CPUs that share a clock domain; a **driver** interfaces with
+the hardware; a **governor** decides when and how to change frequency.
 
 ### Source Files
 
@@ -187,8 +188,9 @@ a single global governor directory. `struct gov_attr_set` handles this sharing w
 
 ## 2. CPUIdle — CPU Idle State Management
 
-CPUIdle selects which idle state (C-state) a CPU enters when it has no work. A **driver**
-declares available states; a **governor** picks which one to enter each time.
+CPUIdle selects which idle state (C-state) a CPU enters when it has no work. A
+**driver** declares available states; a **governor** picks which one to enter
+each time.
 
 ### Source Files
 
@@ -913,8 +915,8 @@ When `device_may_wakeup()`, ACPI enables the corresponding GPE before suspend.
 
 ### System Suspend -> Device Suspend Ordering
 
-The device PM list (`dpm_list`) is ordered by device registration time. During suspend,
-devices are traversed in reverse order (children before parents). During resume, devices
-are traversed in forward order (parents before children). This ensures a parent device
-is still active when its children are being suspended, and resumed before its children
-need it.
+The device PM list (`dpm_list`) is ordered by device registration time. During
+suspend, devices are traversed in reverse order (children before parents).
+During resume, devices are traversed in forward order (parents before
+children). This ensures a parent device is still active when its children are
+being suspended, and resumed before its children need it.
