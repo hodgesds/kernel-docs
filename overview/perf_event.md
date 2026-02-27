@@ -84,14 +84,14 @@ Defined in `include/linux/perf_event.h:679`:
                                │
                                ▼
  ┌─────────┐  enable   ┌────────────┐  sched_in   ┌────────┐
- │   OFF   │──────────▶│  INACTIVE  │────────────▶│ ACTIVE │
- │  (-1)   │◀──────────│    (0)     │◀────────────│  (1)   │
+ │   OFF   │─────────▶│  INACTIVE  │───────────▶│ ACTIVE │
+ │  (-1)   │◀─────────│    (0)     │◀───────────│  (1)   │
  └─────────┘  disable  └────────────┘  sched_out  └────────┘
       │                      ▲                         │
       │  error               │ enable                  │ error
       │                      │                         │
       ▼                ┌─────┴────┐                    │
- ┌─────────┐           │  ERROR   │◀───────────────────┘
+ ┌─────────┐           │  ERROR   │◀──────────────────┘
  │  EXIT   │           │  (-2)    │  (scheduling failure)
  │  (-3)   │           └──────────┘
  │ (task   │
@@ -948,7 +948,7 @@ bpf_perf_event_output(         Look up perf_event from       poll()/
                                perf_event_output()              │
                                   │                             │
                                   ▼                             │
-                               perf_output_begin()  ──────────▶ │
+                               perf_output_begin()  ─────────▶ │
                                write PERF_RECORD_SAMPLE         │
                                perf_output_end()                │
                                   │                             ▼
