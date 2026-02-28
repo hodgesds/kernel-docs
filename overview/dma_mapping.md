@@ -38,7 +38,7 @@ capabilities.
 +------------------------------------------------------------------+
 |                   The DMA Problem                                 |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  CPU                          Device                              |
 |  +-----------+                +----------+                        |
 |  | Virtual   |                | DMA      |                        |
@@ -55,13 +55,13 @@ capabilities.
 |                    |   Physical RAM     |                         |
 |                    |                    |                         |
 |                    +--------------------+                         |
-|                                                                    |
+|                                                                   |
 |  Problems:                                                        |
 |  1. Device bus address != CPU physical address (offset, IOMMU)    |
 |  2. Device may only address lower 32 bits (or less)               |
 |  3. CPU caches may hold stale data vs. what device wrote          |
 |  4. Memory may not be physically contiguous                       |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -121,31 +121,31 @@ enum dma_data_direction {
 +------------------------------------------------------------------+
 |                  DMA Direction Semantics                          |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  DMA_TO_DEVICE (CPU -> Device)                                    |
 |  ============================                                     |
 |  - CPU writes data to buffer, then maps it                        |
 |  - Kernel flushes CPU caches so device sees current data          |
 |  - Device reads from the buffer                                   |
 |  - Example: transmitting a network packet                         |
-|                                                                    |
+|                                                                   |
 |  DMA_FROM_DEVICE (Device -> CPU)                                  |
 |  ===============================                                  |
 |  - Device writes data into the buffer                             |
 |  - CPU invalidates caches before reading                          |
 |  - CPU reads the data written by device                           |
 |  - Example: receiving a network packet                            |
-|                                                                    |
+|                                                                   |
 |  DMA_BIDIRECTIONAL (both directions)                              |
 |  ====================================                             |
 |  - Both CPU and device may read and write                         |
 |  - Most expensive: requires both flush and invalidate             |
 |  - Example: command buffer shared with device                     |
-|                                                                    |
+|                                                                   |
 |  DMA_NONE                                                         |
 |  =========                                                        |
 |  - No DMA transfer, used as a sentinel / for debug                |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -351,27 +351,27 @@ static inline int dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
 +------------------------------------------------------------------+
 |              Streaming DMA Mapping Lifecycle                      |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  1. CPU prepares data in buffer                                   |
-|                                                                    |
+|                                                                   |
 |  2. dma_map_single(dev, buf, size, DMA_TO_DEVICE)                 |
 |     - Flushes CPU caches (write-back)                             |
 |     - Returns dma_addr_t for device                               |
 |     - Buffer now "owned" by device                                |
 |     +---> CPU must NOT touch the buffer                           |
-|                                                                    |
+|                                                                   |
 |  3. Program device with dma_addr_t                                |
-|                                                                    |
+|                                                                   |
 |  4. Device performs DMA transfer                                  |
-|                                                                    |
+|                                                                   |
 |  5. Device signals completion (interrupt, polling)                |
-|                                                                    |
+|                                                                   |
 |  6. dma_unmap_single(dev, dma_addr, size, DMA_TO_DEVICE)          |
 |     - Invalidates CPU caches if needed                            |
 |     - Frees SWIOTLB bounce buffer if used                         |
 |     - Buffer now "owned" by CPU again                             |
 |     +---> CPU can safely access the buffer                        |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -475,14 +475,14 @@ void *dma_alloc_attrs(struct device *dev, size_t size, dma_addr_t *dma_handle,
 +------------------------------------------------------------------+
 |         Streaming vs. Coherent DMA Mappings                       |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  Streaming (dma_map_single, dma_map_sg)                           |
 |  ======================================                           |
 |  - Maps existing CPU memory for device access                     |
 |  - Explicit ownership transfer (map/sync/unmap)                   |
 |  - Better performance (uses cached memory)                        |
 |  - Use for: data buffers, network packets, disk I/O               |
-|                                                                    |
+|                                                                   |
 |  Coherent (dma_alloc_coherent)                                    |
 |  =============================                                    |
 |  - Allocates new memory accessible by both CPU and device         |
@@ -490,14 +490,14 @@ void *dma_alloc_attrs(struct device *dev, size_t size, dma_addr_t *dma_handle,
 |  - Lower CPU performance (uncached/write-combining memory)        |
 |  - Returns both CPU virtual address and DMA address               |
 |  - Use for: descriptor rings, command queues, shared state        |
-|                                                                    |
+|                                                                   |
 |  Non-coherent pages (dma_alloc_pages / dma_alloc_noncoherent)     |
 |  =============================================================    |
 |  - Allocates pages with a DMA mapping but no coherency guarantee  |
 |  - Requires explicit sync like streaming mappings                 |
 |  - Returns struct page * (not a kernel virtual address)           |
 |  - Use for: large buffers where sync cost < uncached cost         |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -599,14 +599,14 @@ appear contiguous from the device's perspective.
 +------------------------------------------------------------------+
 |             Scatter-Gather DMA Mapping                            |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  Before mapping (CPU view):                                       |
-|  +--------+  +--------+  +--------+  +--------+                  |
-|  | Page A |  | Page C |  | Page Q |  | Page R |                  |
-|  | 0x1000 |  | 0x3000 |  | 0x5000 |  | 0x6000 |                  |
-|  +--------+  +--------+  +--------+  +--------+                  |
+|  +--------+  +--------+  +--------+  +--------+                   |
+|  | Page A |  | Page C |  | Page Q |  | Page R |                   |
+|  | 0x1000 |  | 0x3000 |  | 0x5000 |  | 0x6000 |                   |
+|  +--------+  +--------+  +--------+  +--------+                   |
 |   sg[0]       sg[1]       sg[2]       sg[3]                       |
-|                                                                    |
+|                                                                   |
 |  After dma_map_sg (with IOMMU - may coalesce):                    |
 |  +------------------+  +------------------+                       |
 |  | IOVA 0x10000     |  | IOVA 0x12000     |                       |
@@ -614,12 +614,12 @@ appear contiguous from the device's perspective.
 |  +------------------+  +------------------+                       |
 |   sg_dma[0]              sg_dma[1]                                |
 |   Returns nents = 2  (coalesced from 4)                           |
-|                                                                    |
+|                                                                   |
 |  After dma_map_sg (direct, no coalescing):                        |
-|  sg[0].dma_address = 0x1000  sg[2].dma_address = 0x5000          |
-|  sg[1].dma_address = 0x3000  sg[3].dma_address = 0x6000          |
+|  sg[0].dma_address = 0x1000  sg[2].dma_address = 0x5000           |
+|  sg[1].dma_address = 0x3000  sg[3].dma_address = 0x6000           |
 |   Returns nents = 4                                               |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -747,7 +747,7 @@ else
 +------------------------------------------------------------------+
 |              DMA Mapping Dispatch Architecture                    |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  Driver calls:  dma_map_page_attrs(dev, ...)                      |
 |                         |                                         |
 |                         v                                         |
@@ -765,15 +765,15 @@ else
 |           |        |  |    |      |                               |
 |       yes |     no |  | yes|   no |                               |
 |           v        |  |    v      v                               |
-|   +-------+------+ |  | +--+--+ +-+--------+                     |
-|   | dma_direct_  | |  | |iommu| |ops->     |                     |
-|   | map_page()   | |  | |_dma_| |map_page()|                     |
-|   | (phys->dma   | |  | |map_ | |          |                     |
-|   |  + SWIOTLB)  | |  | |page | |(custom)  |                     |
-|   +--------------+ |  | +-----+ +----------+                     |
+|   +-------+------+ |  | +--+--+ +-+--------+                      |
+|   | dma_direct_  | |  | |iommu| |ops->     |                      |
+|   | map_page()   | |  | |_dma_| |map_page()|                      |
+|   | (phys->dma   | |  | |map_ | |          |                      |
+|   |  + SWIOTLB)  | |  | |page | |(custom)  |                      |
+|   +--------------+ |  | +-----+ +----------+                      |
 |                    |  |                                           |
 |                    +--+                                           |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -897,7 +897,7 @@ This provides:
 +------------------------------------------------------------------+
 |                   IOMMU-Backed DMA                                |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  CPU                            Device                            |
 |  +---------+                    +--------+                        |
 |  | Virtual |                    | DMA    |                        |
@@ -915,12 +915,12 @@ This provides:
 |  +----+-----------------------------+----+                        |
 |  |            Physical RAM               |                        |
 |  +---------------------------------------+                        |
-|                                                                    |
+|                                                                   |
 |  Benefits:                                                        |
 |  - 32-bit device can access all RAM via IOVA remapping            |
 |  - Non-contiguous pages look contiguous to device                 |
 |  - Device isolation (protection from DMA attacks)                 |
-|                                                                    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -966,25 +966,25 @@ device can reach.
 +------------------------------------------------------------------+
 |                    SWIOTLB Bounce Buffering                       |
 +------------------------------------------------------------------+
-|                                                                    |
+|                                                                   |
 |  High Memory (above device DMA mask)                              |
-|  +---------------------+                                         |
-|  | Original Buffer     |<--- CPU accesses here                   |
-|  | phys: 0x1_0000_0000 |                                         |
-|  +-----+---------------+                                         |
+|  +---------------------+                                          |
+|  | Original Buffer     |<--- CPU accesses here                    |
+|  | phys: 0x1_0000_0000 |                                          |
+|  +-----+---------------+                                          |
 |        |                                                          |
 |        | copy on map (DMA_TO_DEVICE)                              |
 |        | copy on unmap/sync (DMA_FROM_DEVICE)                     |
 |        v                                                          |
 |  Low Memory (within device DMA mask)                              |
-|  +---------------------+                                         |
-|  | SWIOTLB Bounce Buf  |<--- Device DMA targets here             |
-|  | phys: 0x0100_0000   |                                         |
-|  +---------------------+                                         |
-|                                                                    |
+|  +---------------------+                                          |
+|  | SWIOTLB Bounce Buf  |<--- Device DMA targets here              |
+|  | phys: 0x0100_0000   |                                          |
+|  +---------------------+                                          |
+|                                                                   |
 |  The SWIOTLB pool is allocated at boot from low memory            |
-|  Default size: 64 MB, configurable via swiotlb= boot parameter   |
-|                                                                    |
+|  Default size: 64 MB, configurable via swiotlb= boot parameter    |
+|                                                                   |
 +------------------------------------------------------------------+
 ```
 
