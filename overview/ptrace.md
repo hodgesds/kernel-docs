@@ -27,7 +27,7 @@ single-stepping through instructions.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ptrace Architecture                       │
+│                    ptrace Architecture                      │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  Tracer (debugger)                Tracee (debugged process) │
@@ -282,10 +282,10 @@ legacy PTRACE_ATTACH. The key differences:
 │             PTRACE_ATTACH vs PTRACE_SEIZE                   │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  PTRACE_ATTACH (legacy)              PTRACE_SEIZE (new)    │
+│  PTRACE_ATTACH (legacy)              PTRACE_SEIZE (new)     │
 │  ──────────────────────              ──────────────────     │
 │  - Sends SIGSTOP to tracee           - Does NOT send signal │
-│  - Sets PT_PTRACED only              - Sets PT_PTRACED |   │
+│  - Sets PT_PTRACED only              - Sets PT_PTRACED |    │
 │                                        PT_SEIZED            │
 │  - Signal-delivery-stop model        - Enables new STOP     │
 │                                        event model          │
@@ -430,27 +430,27 @@ the task scheduler state (`__TASK_TRACED`):
 │                                                                   │
 │  RUNNING ───────────────────────────────► TRACED                  │
 │    │         ptrace_stop() sets:          │                       │
-│    │           set_special_state(          │  Tracee is stopped    │
-│    │             TASK_TRACED)              │  in schedule()        │
+│    │           set_special_state(         │  Tracee is stopped    │
+│    │             TASK_TRACED)             │  in schedule()        │
 │    │           JOBCTL_TRACED              │                       │
-│    │           current->exit_code = sig    │                       │
-│    │           notify tracer via waitpid() │                       │
-│    │                                       │                       │
-│    │                                       ▼                       │
-│    │                              Tracer calls wait()              │
-│    │                              gets stop status                 │
-│    │                                       │                       │
-│    │         ptrace_resume():              │                       │
-│    │           clear JOBCTL_TRACED         │                       │
-│    │           wake_up_state(__TASK_TRACED) │                       │
-│    ◄───────────────────────────────────────┘                       │
-│                                                                    │
-│  Special: ptrace_freeze_traced() / ptrace_unfreeze_traced()        │
-│  ───────────────────────────────────────────────────────            │
-│  While tracer inspects/modifies tracee state, the tracee is        │
-│  "frozen" (JOBCTL_PTRACE_FROZEN) to prevent even SIGKILL from      │
-│  waking it. This makes ptrace operations uninterruptible.          │
-│                                                                    │
+│    │           current->exit_code = sig   │                       │
+│    │           notify tracer via waitpid()│                       │
+│    │                                      │                       │
+│    │                                      ▼                       │
+│    │                              Tracer calls wait()             │
+│    │                              gets stop status                │
+│    │                                       │                      │
+│    │         ptrace_resume():              │                      │
+│    │           clear JOBCTL_TRACED         │                      │
+│    │           wake_up_state(__TASK_TRACED)│                      │
+│    ◄───────────────────────────────────────┘                      │
+│                                                                   │
+│  Special: ptrace_freeze_traced() / ptrace_unfreeze_traced()       │
+│  ───────────────────────────────────────────────────────          │
+│  While tracer inspects/modifies tracee state, the tracee is       │
+│  "frozen" (JOBCTL_PTRACE_FROZEN) to prevent even SIGKILL from     │
+│  waking it. This makes ptrace operations uninterruptible.         │
+│                                                                   │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -777,7 +777,7 @@ static int ptrace_get_syscall_info(struct task_struct *child,
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                   Syscall Tracing Flow                          │
+│                   Syscall Tracing Flow                         │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │  Tracee enters kernel for syscall                              │
@@ -790,8 +790,8 @@ static int ptrace_get_syscall_info(struct task_struct *child,
 │       │                                                        │
 │       ▼                                                        │
 │  ptrace_stop() ──► tracee sleeps, tracer woken via waitpid()   │
-│       │             tracer may inspect/modify registers         │
-│       │             tracer may change syscall number            │
+│       │             tracer may inspect/modify registers        │
+│       │             tracer may change syscall number           │
 │       ▼                                                        │
 │  Check SYSCALL_WORK_SYSCALL_EMU?                               │
 │       │ yes: skip syscall entirely                             │
@@ -807,7 +807,7 @@ static int ptrace_get_syscall_info(struct task_struct *child,
 │       │                                                        │
 │       ▼                                                        │
 │  ptrace_stop() ──► tracee sleeps, tracer woken                 │
-│                     tracer may inspect return value             │
+│                     tracer may inspect return value            │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -1303,7 +1303,7 @@ The kernel must carefully track who set the Trap Flag:
 │                                                               │
 │  TIF_SINGLESTEP   - Set when single-stepping is active        │
 │  TIF_FORCED_TF    - Set when the debugger (not user code)     │
-│                     is responsible for TF being set            │
+│                     is responsible for TF being set           │
 │  TIF_BLOCKSTEP    - Set when block-stepping (BTF) is active   │
 │                                                               │
 │  When reading flags (getreg):                                 │
@@ -1315,10 +1315,10 @@ The kernel must carefully track who set the Trap Flag:
 │    If user code set TF, leave it alone                        │
 │                                                               │
 │  arch/x86/kernel/ptrace.c:342:                                │
-│    static unsigned long get_flags(struct task_struct *task) {  │
+│    static unsigned long get_flags(struct task_struct *task) { │
 │        unsigned long retval = task_pt_regs(task)->flags;      │
 │        if (test_tsk_thread_flag(task, TIF_FORCED_TF))         │
-│            retval &= ~X86_EFLAGS_TF;                         │
+│            retval &= ~X86_EFLAGS_TF;                          │
 │        return retval;                                         │
 │    }                                                          │
 │                                                               │
@@ -1478,7 +1478,7 @@ static int yama_ptrace_access_check(struct task_struct *child,
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
 │  Level 0 - YAMA_SCOPE_DISABLED                                │
-│    Classic behavior. Any process with matching UIDs can trace. │
+│    Classic behavior. Any process with matching UIDs can trace.│
 │                                                               │
 │  Level 1 - YAMA_SCOPE_RELATIONAL (common default)             │
 │    Only descendants of the tracer can be traced.              │
@@ -1487,12 +1487,12 @@ static int yama_ptrace_access_check(struct task_struct *child,
 │                                                               │
 │  Level 2 - YAMA_SCOPE_CAPABILITY                              │
 │    Only processes with CAP_SYS_PTRACE can attach.             │
-│    PTRACE_TRACEME is also restricted.                          │
+│    PTRACE_TRACEME is also restricted.                         │
 │                                                               │
 │  Level 3 - YAMA_SCOPE_NO_ATTACH                               │
 │    No process can attach to another. Only PTRACE_TRACEME      │
-│    by the tracee itself is possible (for debuggers that        │
-│    fork-and-exec under ptrace).                                │
+│    by the tracee itself is possible (for debuggers that       │
+│    fork-and-exec under ptrace).                               │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -1501,7 +1501,7 @@ static int yama_ptrace_access_check(struct task_struct *child,
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│           ptrace Security Check Chain                     │
+│           ptrace Security Check Chain                    │
 ├──────────────────────────────────────────────────────────┤
 │                                                          │
 │  ptrace_attach()                                         │
@@ -1520,7 +1520,7 @@ static int yama_ptrace_access_check(struct task_struct *child,
 │       │                                                  │
 │       ├── Same thread group? → allow                     │
 │       ├── UID/GID match all creds? → ok                  │
-│       ├── CAP_SYS_PTRACE? → ok                          │
+│       ├── CAP_SYS_PTRACE? → ok                           │
 │       ├── Otherwise → deny                               │
 │       │                                                  │
 │       ▼  (if ok)                                         │
@@ -1693,24 +1693,24 @@ force_sig(SIGTRAP);
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  Signal Delivery                                                 │
-│    └──► get_signal() ──► ptrace_stop(signo)                     │
-│                           └──► tracer: waitpid() → WIFSTOPPED   │
+│    └──► get_signal() ──► ptrace_stop(signo)                      │
+│                           └──► tracer: waitpid() → WIFSTOPPED    │
 │                                                                  │
 │  Syscall Entry/Exit                                              │
 │    └──► syscall_trace_enter/exit()                               │
 │           └──► ptrace_report_syscall_entry/exit()                │
 │                 └──► ptrace_stop(SIGTRAP|0x80)                   │
-│                       └──► tracer: waitpid() → WIFSTOPPED       │
+│                       └──► tracer: waitpid() → WIFSTOPPED        │
 │                                                                  │
 │  Seccomp Filter (SECCOMP_RET_TRACE)                              │
 │    └──► __seccomp_filter()                                       │
 │           └──► ptrace_event(PTRACE_EVENT_SECCOMP, data)          │
 │                 └──► ptrace_stop((PTRACE_EVENT_SECCOMP<<8)|TRAP) │
-│                       └──► tracer: waitpid() → WIFSTOPPED       │
+│                       └──► tracer: waitpid() → WIFSTOPPED        │
 │                            status >> 16 == PTRACE_EVENT_SECCOMP  │
 │                                                                  │
 │  Process Events (fork/exec/exit)                                 │
-│    └──► ptrace_event(PTRACE_EVENT_FORK/EXEC/EXIT, msg)          │
+│    └──► ptrace_event(PTRACE_EVENT_FORK/EXEC/EXIT, msg)           │
 │           └──► ptrace_stop((event<<8)|SIGTRAP)                   │
 │                 └──► tracer: waitpid() → WIFSTOPPED              │
 │                      PTRACE_GETEVENTMSG → child pid / exit code  │
@@ -1719,7 +1719,7 @@ force_sig(SIGTRAP);
 │    └──► do_debug() ──► SIGTRAP                                   │
 │           └──► ptrace_stop(SIGTRAP)                              │
 │                                                                  │
-│  Hardware Breakpoint / Watchpoint                                 │
+│  Hardware Breakpoint / Watchpoint                                │
 │    └──► do_debug() ──► SIGTRAP                                   │
 │           └──► ptrace_stop(SIGTRAP)                              │
 │                                                                  │
