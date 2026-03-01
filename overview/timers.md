@@ -233,7 +233,7 @@ add_timer_global(&my_timer);          /* Can migrate between CPUs */
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  Modern kernel uses hierarchical timer wheel:               │
-│  LVL_BITS=6 (64 buckets/level), LVL_DEPTH=9 (HZ>100)       │
+│  LVL_BITS=6 (64 buckets/level), LVL_DEPTH=9 (HZ>100)        │
 │  Total: 576 buckets, 3 bases per CPU (NO_HZ_COMMON)         │
 │                                                             │
 │  Granularity table (HZ=1000):                               │
