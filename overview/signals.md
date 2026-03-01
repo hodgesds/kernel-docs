@@ -40,7 +40,7 @@ The Linux signal subsystem must handle:
 
 ```
 +-------------------------------------------------------------------+
-|                    Signal Lifecycle                                |
+|                    Signal Lifecycle                               |
 +-------------------------------------------------------------------+
 |                                                                   |
 |  1. GENERATION                                                    |
@@ -49,31 +49,31 @@ The Linux signal subsystem must handle:
 |          v                                                        |
 |  2. SENDING  (send_signal_locked)                                 |
 |     - Permission checks                                           |
-|     - Allocate sigqueue (for RT signals)                           |
-|     - Add to pending set (per-thread or shared)                    |
+|     - Allocate sigqueue (for RT signals)                          |
+|     - Add to pending set (per-thread or shared)                   |
 |     - Set TIF_SIGPENDING                                          |
 |     - Wake up target thread                                       |
 |          |                                                        |
 |          v                                                        |
 |  3. DELIVERY  (get_signal, on return to user space)               |
-|     - Dequeue from pending sets                                    |
+|     - Dequeue from pending sets                                   |
 |     - Ptrace interception                                         |
 |     - Check handler (SIG_IGN, SIG_DFL, user handler)              |
 |          |                                                        |
-|          +-----> SIG_IGN: discard                                  |
-|          +-----> SIG_DFL: default action (ignore/term/core/stop)   |
-|          +-----> User handler:                                     |
-|                    |                                               |
-|                    v                                               |
+|          +-----> SIG_IGN: discard                                 |
+|          +-----> SIG_DFL: default action (ignore/term/core/stop)  |
+|          +-----> User handler:                                    |
+|                    |                                              |
+|                    v                                              |
 |  4. HANDLER SETUP  (arch-specific: setup_rt_frame)                |
-|     - Save registers + signal mask on user stack                   |
-|     - Set up return trampoline (sigreturn)                         |
-|     - Redirect execution to handler                                |
+|     - Save registers + signal mask on user stack                  |
+|     - Set up return trampoline (sigreturn)                        |
+|     - Redirect execution to handler                               |
 |          |                                                        |
 |          v                                                        |
 |  5. HANDLER RETURN  (sys_rt_sigreturn)                            |
-|     - Restore registers + signal mask                              |
-|     - Resume interrupted execution                                 |
+|     - Restore registers + signal mask                             |
+|     - Resume interrupted execution                                |
 |                                                                   |
 +-------------------------------------------------------------------+
 ```
@@ -464,21 +464,21 @@ Linux maintains two levels of pending signals:
 |  Thread Group (signal_struct)                   |
 |  ┌───────────────────────────────────────────┐  |
 |  │  shared_pending                           │  |
-|  │    - Signals sent to the process (kill())  │  |
-|  │    - Any unblocking thread can dequeue     │  |
+|  │    - Signals sent to the process (kill()) │  |
+|  │    - Any unblocking thread can dequeue    │  |
 |  └───────────────────────────────────────────┘  |
 |                                                 |
 |  Thread 1 (task_struct)     Thread 2            |
 |  ┌─────────────────────┐  ┌───────────────────┐ |
-|  │  pending             │  │  pending           │|
-|  │    - Signals sent to │  │    - Signals sent  │|
-|  │      this specific   │  │      to this       │|
-|  │      thread (tkill)  │  │      specific      │|
-|  │    - Synchronous     │  │      thread        │|
-|  │      signals (fault) │  │                    │|
+|  │  pending            │  │  pending          │ |
+|  │    - Signals sent to│  │    - Signals sent │ |
+|  │      this specific  │  │      to this      │ |
+|  │      thread (tkill) │  │      specific     │ |
+|  │    - Synchronous    │  │      thread       │ |
+|  │      signals (fault)│  │                   │ |
 |  ├─────────────────────┤  ├───────────────────┤ |
-|  │  blocked (sigset_t)  │  │  blocked           │|
-|  │    - Per-thread mask │  │    - Per-thread    │|
+|  │  blocked (sigset_t) │  │  blocked          │ |
+|  │    - Per-thread mask│  │    - Per-thread   │ |
 |  └─────────────────────┘  └───────────────────┘ |
 |                                                 |
 +-------------------------------------------------+
@@ -558,11 +558,11 @@ static inline bool has_pending_signals(sigset_t *signal, sigset_t *blocked)
 
 ```
 +--------------------------------------------------------------+
-|                   Signal Sending Call Chain                   |
+|                   Signal Sending Call Chain                  |
 +--------------------------------------------------------------+
 |                                                              |
 |  User space syscalls:                                        |
-|    kill()  ──> kill_something_info()                          |
+|    kill()  ──> kill_something_info()                         |
 |    tkill() ──> do_tkill()                                    |
 |    tgkill()──> do_tkill()                                    |
 |    rt_sigqueueinfo() ──> do_rt_sigqueueinfo()                |
@@ -577,10 +577,10 @@ static inline bool has_pending_signals(sigset_t *signal, sigset_t *blocked)
 |  __send_signal_locked(sig, info, t, type, force)             |
 |         |                                                    |
 |         +-- prepare_signal()  : pre-delivery checks          |
-|         +-- legacy_queue()    : drop duplicate std signals    |
-|         +-- sigqueue_alloc()  : allocate sigqueue entry       |
-|         +-- signalfd_notify() : wake signalfd waiters         |
-|         +-- complete_signal() : select thread + wake up       |
+|         +-- legacy_queue()    : drop duplicate std signals   |
+|         +-- sigqueue_alloc()  : allocate sigqueue entry      |
+|         +-- signalfd_notify() : wake signalfd waiters        |
+|         +-- complete_signal() : select thread + wake up      |
 |                                                              |
 +--------------------------------------------------------------+
 ```
@@ -903,22 +903,22 @@ fault-generated signals are prioritized.
 
 ```
 +------------------------------------------------------------+
-|             Signal Dequeue Priority Order                   |
+|             Signal Dequeue Priority Order                  |
 +------------------------------------------------------------+
 |                                                            |
 |  1. Synchronous signals (SIGSEGV, SIGBUS, SIGILL, etc.)    |
 |     - dequeue_synchronous_signal() checked first           |
 |     - Must have positive si_code (kernel-generated)        |
 |                                                            |
-|  2. Per-thread pending (task->pending)                      |
+|  2. Per-thread pending (task->pending)                     |
 |     - Within standard signals: lowest number first         |
-|     - Standard signals before RT signals                    |
+|     - Standard signals before RT signals                   |
 |                                                            |
-|  3. Shared pending (signal->shared_pending)                 |
-|     - Same ordering as per-thread                           |
+|  3. Shared pending (signal->shared_pending)                |
+|     - Same ordering as per-thread                          |
 |                                                            |
-|  Within RT signals: lowest-numbered first (SIGRTMIN has     |
-|  highest priority among RT signals)                         |
+|  Within RT signals: lowest-numbered first (SIGRTMIN has    |
+|  highest priority among RT signals)                        |
 |                                                            |
 +------------------------------------------------------------+
 ```
@@ -956,8 +956,8 @@ When `get_signal()` finds a user handler, the arch-specific code takes over:
 |       +-- Handle syscall restart (ERESTARTSYS, etc.)              |
 |       +-- setup_rt_frame()        (arch/x86/kernel/signal.c:236)  |
 |       |       |                                                   |
-|       |       +-- get_sigframe(): compute stack pointer            |
-|       |       +-- Build rt_sigframe on user stack:                 |
+|       |       +-- get_sigframe(): compute stack pointer           |
+|       |       +-- Build rt_sigframe on user stack:                |
 |       |       |     - siginfo_t                                   |
 |       |       |     - ucontext (saved registers + sigmask)        |
 |       |       |     - FPU/XSAVE state                             |
@@ -966,7 +966,7 @@ When `get_signal()` finds a user handler, the arch-specific code takes over:
 |       |       +-- Set return address = sa_restorer (sigreturn)    |
 |       |                                                           |
 |       +-- signal_setup_done()                                     |
-|       |       +-- signal_delivered(): update blocked mask          |
+|       |       +-- signal_delivered(): update blocked mask         |
 |       |                                                           |
 |       v                                                           |
 |  Return to user space -> handler executes                         |
@@ -1032,14 +1032,14 @@ The `ucontext` contains:
 ```
 High addresses
 +---------------------------+
-| (previous stack contents) |
+| (previous stack contents)  |
 +---------------------------+
-| FPU/XSAVE state          |  <-- aligned to 64 bytes
+| FPU/XSAVE state            |  <-- aligned to 64 bytes
 +---------------------------+
-| alignment padding         |
+| alignment padding          |
 +---------------------------+
 | struct rt_sigframe         |
-|   +-- pretcode (-> vDSO   |
+|   +-- pretcode (-> vDSO    |
 |   |    __vdso_rt_sigreturn)|
 |   +-- ucontext             |
 |   |    +-- uc_flags        |
@@ -1050,7 +1050,7 @@ High addresses
 |   |    +-- uc_sigmask      |
 |   +-- siginfo              |
 +---------------------------+  <-- RSP on handler entry
-| return address (pretcode) |
+| return address (pretcode)  |
 +---------------------------+
 Low addresses
 ```
@@ -1143,10 +1143,10 @@ threads in the group, and `SIGCONT` resumes them.
 
 ```
 +---------------------------------------------------------------+
-|                    Job Control Flow                            |
+|                    Job Control Flow                           |
 +---------------------------------------------------------------+
 |                                                               |
-|  Terminal (tty)                                                |
+|  Terminal (tty)                                               |
 |    |                                                          |
 |    +-- Ctrl+Z generates SIGTSTP to foreground pgrp            |
 |    +-- Ctrl+C generates SIGINT to foreground pgrp             |
@@ -1159,13 +1159,13 @@ threads in the group, and `SIGCONT` resumes them.
 |    +-- "kill %N" sends signal to pgrp                         |
 |                                                               |
 |  SIGCONT vs Stop signals:                                     |
-|    - Sending SIGCONT clears all pending stop signals           |
-|    - Sending any stop signal clears pending SIGCONT            |
-|    - These rules apply regardless of blocking/catching         |
+|    - Sending SIGCONT clears all pending stop signals          |
+|    - Sending any stop signal clears pending SIGCONT           |
+|    - These rules apply regardless of blocking/catching        |
 |                                                               |
 |  Orphaned process groups:                                     |
 |    - SIGTSTP, SIGTTIN, SIGTTOU are silently discarded         |
-|    - Only SIGSTOP can stop an orphaned pgrp                    |
+|    - Only SIGSTOP can stop an orphaned pgrp                   |
 |                                                               |
 +---------------------------------------------------------------+
 ```
@@ -1342,7 +1342,7 @@ static int ptrace_signal(int signr, kernel_siginfo_t *info, enum pid_type type)
 
 ```
 +-------------------------------------------------------------------+
-|                  Ptrace Signal Interception                        |
+|                  Ptrace Signal Interception                       |
 +-------------------------------------------------------------------+
 |                                                                   |
 |  Signal arrives at ptraced task                                   |
@@ -1495,18 +1495,18 @@ up any signalfd waiters on the `sighand->signalfd_wqh` wait queue.
 |     via the normal path)                                          |
 |                                                                   |
 |  2. Create signalfd with those signals:                           |
-|       int sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC)  |
+|       int sfd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC)   |
 |                                                                   |
 |  3. Add sfd to epoll / poll loop                                  |
 |                                                                   |
 |  4. When sfd is readable:                                         |
-|       struct signalfd_siginfo si;                                  |
+|       struct signalfd_siginfo si;                                 |
 |       read(sfd, &si, sizeof(si));                                 |
 |       // si.ssi_signo contains the signal number                  |
 |       // si.ssi_pid, si.ssi_uid, etc. available                   |
 |                                                                   |
-|  Key constraint: the calling thread must have the signals          |
-|  blocked, otherwise they are delivered normally.                   |
+|  Key constraint: the calling thread must have the signals         |
+|  blocked, otherwise they are delivered normally.                  |
 |                                                                   |
 +-------------------------------------------------------------------+
 ```
