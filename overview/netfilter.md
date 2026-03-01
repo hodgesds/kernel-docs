@@ -30,7 +30,7 @@ and packet logging.
 
 ```
 +-------------------------------------------------------------+
-|                    Netfilter Subsystem                       |
+|                    Netfilter Subsystem                      |
 +-------------------------------------------------------------+
 |                                                             |
 |  1. Hook Framework       (net/netfilter/core.c)             |
@@ -42,7 +42,7 @@ and packet logging.
 |     - Modern packet classification engine                   |
 |     - Tables, chains, rules, expressions                    |
 |     - Sets, maps, stateful objects                          |
-|     - Atomic ruleset replacement via transactions            |
+|     - Atomic ruleset replacement via transactions           |
 |                                                             |
 |  3. Connection Tracking  (net/netfilter/nf_conntrack_core.c)|
 |     - Stateful packet inspection                            |
@@ -54,9 +54,9 @@ and packet logging.
 |     - Masquerading                                          |
 |     - Built on connection tracking                          |
 |                                                             |
-|  5. Flowtables           (net/netfilter/nf_flow_table_core.c)|
-|     - Software fast path for established flows               |
-|     - Hardware offload to SmartNICs                          |
+|  5. Flowtables          (net/netfilter/nf_flow_table_core.c)|
+|     - Software fast path for established flows              |
+|     - Hardware offload to SmartNICs                         |
 |                                                             |
 +-------------------------------------------------------------+
 ```
@@ -200,7 +200,7 @@ This ordering determines how the subsystems interact at each hook:
   NF_INET_PRE_ROUTING priority order:
   +---------+--------+-----+--------+--------+--------+
   | defrag  |  raw   | CT  | mangle |  DNAT  | filter |
-  | (-400)  | (-300) |(-200)| (-150) | (-100) |  (0)   |
+  | (-400)  | (-300) |(-200)| (-150)| (-100) |  (0)   |
   +---------+--------+-----+--------+--------+--------+
   lowest priority --------------------------> highest priority
 ```
