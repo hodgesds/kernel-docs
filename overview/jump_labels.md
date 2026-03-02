@@ -25,7 +25,7 @@ direct CALL/JMP instruction.
 
 ```
 +------------------------------------------------------------------+
-|              Zero-Overhead Branch/Call Primitives                 |
+|              Zero-Overhead Branch/Call Primitives                |
 +------------------------------------------------------------------+
 |                                                                  |
 |  Traditional approach:                                           |
@@ -733,15 +733,15 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 |                x86 Instruction Encodings                     |
 +--------------------------------------------------------------+
 |                                                              |
-|  NOP (5 bytes):    0x0f 0x1f 0x44 0x00 0x00                 |
+|  NOP (5 bytes):    0x0f 0x1f 0x44 0x00 0x00                  |
 |  NOP (2 bytes):    0x66 0x90                                 |
 |  JMP32 (5 bytes):  0xe9 [disp32]                             |
 |  JMP8 (2 bytes):   0xeb [disp8]                              |
 |  CALL (5 bytes):   0xe8 [disp32]                             |
 |  RET (1 byte):     0xc3                                      |
 |  INT3 (1 byte):    0xcc                                      |
-|  XOR EAX,EAX:      0x2e 0x2e 0x2e 0x31 0xc0 (5 bytes)       |
-|  UD1 (tramp sig):  0x0f 0xb9 0xcc (3 bytes)                 |
+|  XOR EAX,EAX:      0x2e 0x2e 0x2e 0x31 0xc0 (5 bytes)        |
+|  UD1 (tramp sig):  0x0f 0xb9 0xcc (3 bytes)                  |
 |                                                              |
 +--------------------------------------------------------------+
 ```
@@ -1029,18 +1029,18 @@ static void text_poke_bp_batch(struct text_poke_loc *tp, unsigned int nr_entries
 |              INT3 Breakpoint Patching Protocol                   |
 +------------------------------------------------------------------+
 |                                                                  |
-|  Original instruction:  [OP] [B2] [B3] [B4] [B5]                |
+|  Original instruction:  [OP] [B2] [B3] [B4] [B5]                 |
 |                                                                  |
-|  Step 1: Write INT3:    [CC] [B2] [B3] [B4] [B5]                |
+|  Step 1: Write INT3:    [CC] [B2] [B3] [B4] [B5]                 |
 |           IPI-sync all cores                                     |
 |           Any CPU hitting this address traps to INT3 handler     |
 |           which emulates the OLD instruction                     |
 |                                                                  |
-|  Step 2: Write tail:    [CC] [B2'] [B3'] [B4'] [B5']            |
+|  Step 2: Write tail:    [CC] [B2'] [B3'] [B4'] [B5']             |
 |           IPI-sync all cores                                     |
 |           INT3 handler now emulates the NEW instruction          |
 |                                                                  |
-|  Step 3: Write opcode:  [OP'] [B2'] [B3'] [B4'] [B5']           |
+|  Step 3: Write opcode:  [OP'] [B2'] [B3'] [B4'] [B5']            |
 |           IPI-sync all cores                                     |
 |           Normal execution of the new instruction                |
 |                                                                  |
