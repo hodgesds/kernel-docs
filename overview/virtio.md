@@ -40,7 +40,7 @@ Key design principles:
 
 ```
 +---------------------------------------------------------------+
-|                    Virtio Architecture                         |
+|                    Virtio Architecture                        |
 +---------------------------------------------------------------+
 |                                                               |
 |   Guest (Linux Kernel)            Host (QEMU / KVM / vhost)   |
@@ -52,14 +52,14 @@ Key design principles:
 |              |                               |                |
 |   +----------+--------------+    +-----------+-------------+  |
 |   |    Virtqueue API        |    |   Vring access logic    |  |
-|   |    (virtio_ring.c)      |    |   (QEMU / vhost.c)     |  |
+|   |    (virtio_ring.c)      |    |   (QEMU / vhost.c)      |  |
 |   +----------+--------------+    +-----------+-------------+  |
 |              |                               |                |
 |   +----------+-------------------------------+-------------+  |
 |   |              Shared Memory (Vrings)                    |  |
-|   |  +--------+   +--------+   +--------+                 |  |
-|   |  | desc[] |   | avail  |   | used   |                 |  |
-|   |  +--------+   +--------+   +--------+                 |  |
+|   |  +--------+   +--------+   +--------+                  |  |
+|   |  | desc[] |   | avail  |   | used   |                  |  |
+|   |  +--------+   +--------+   +--------+                  |  |
 |   +--------------------------------------------------------+  |
 |              |                               |                |
 |   +----------+--------------+    +-----------+-------------+  |
@@ -77,14 +77,14 @@ The virtio subsystem is organized into several layers in the Linux kernel:
 
 ```
 +---------------------------------------------------------------+
-|                    Layer Diagram                               |
+|                    Layer Diagram                              |
 +---------------------------------------------------------------+
 |                                                               |
 |   Device Drivers (consumers)                                  |
-|   +---------------------------------------------------+      |
-|   | virtio-net  | virtio-blk | virtio-scsi | virtio-* |      |
-|   +------+------+------+-----+------+------+----+-----+      |
-|          |             |             |           |             |
+|   +---------------------------------------------------+       |
+|   | virtio-net  | virtio-blk | virtio-scsi | virtio-* |       |
+|   +------+------+------+-----+------+------+----+-----+       |
+|          |             |             |           |            |
 |   +------+-------------+-------------+-----------+------+     |
 |   |              struct virtio_driver                   |     |
 |   |              (include/linux/virtio.h:218)           |     |
@@ -104,11 +104,11 @@ The virtio subsystem is organized into several layers in the Linux kernel:
 |          |                                                    |
 |   +------+----------------------------------------------+     |
 |   | Transport Layer                                     |     |
-|   | +-------------+ +-------------+ +-----------+      |     |
-|   | | virtio-pci  | | virtio-mmio | | virtio-ccw|      |     |
-|   | | (modern +   | | (platform   | | (s390     |      |     |
-|   | |  legacy)    | |  device)    | |  channel) |      |     |
-|   | +-------------+ +-------------+ +-----------+      |     |
+|   | +-------------+ +-------------+ +-----------+       |     |
+|   | | virtio-pci  | | virtio-mmio | | virtio-ccw|       |     |
+|   | | (modern +   | | (platform   | | (s390     |       |     |
+|   | |  legacy)    | |  device)    | |  channel) |       |     |
+|   | +-------------+ +-------------+ +-----------+       |     |
 |   +-----------------------------------------------------+     |
 |                                                               |
 +---------------------------------------------------------------+
@@ -224,11 +224,11 @@ ring, and a used ring.
 +---------------------------------------------------------------+
 |                                                               |
 |  Descriptor Table (16 bytes each)                             |
-|  +--------+--------+--------+--------+-----+--------+        |
-|  | desc 0 | desc 1 | desc 2 | desc 3 | ... | desc N |        |
-|  +--------+--------+--------+--------+-----+--------+        |
+|  +--------+--------+--------+--------+-----+--------+         |
+|  | desc 0 | desc 1 | desc 2 | desc 3 | ... | desc N |         |
+|  +--------+--------+--------+--------+-----+--------+         |
 |                                                               |
-|  Available Ring (driver -> device)                             |
+|  Available Ring (driver -> device)                            |
 |  +-------+-------+----------------------------+----------+    |
 |  | flags | idx   | ring[0] ring[1] ... ring[N] | used_evt |   |
 |  +-------+-------+----------------------------+----------+    |
@@ -394,7 +394,7 @@ struct vring_packed_desc_event {
 
 ```
 +---------------------------------------------------------------+
-|                Split vs Packed Comparison                      |
+|                Split vs Packed Comparison                     |
 +---------------------------------------------------------------+
 |                                                               |
 |  Split Ring:                                                  |
@@ -594,7 +594,7 @@ driver advertise feature bits; only the intersection is activated.
 
 ```
 +---------------------------------------------------------------+
-|                Feature Negotiation Flow                        |
+|                Feature Negotiation Flow                       |
 +---------------------------------------------------------------+
 |                                                               |
 |  1. Device publishes feature bits                             |
@@ -991,7 +991,7 @@ thread.
 
 ```
 +---------------------------------------------------------------+
-|                 Vhost Architecture                             |
+|                 Vhost Architecture                            |
 +---------------------------------------------------------------+
 |                                                               |
 |   Guest Kernel                Host Kernel                     |
@@ -1048,7 +1048,7 @@ struct vhost_virtqueue {
 
 ### Vhost Implementations
 
-| Module       | File                     | Purpose                        |
+| Module      | File                     | Purpose                        |
 |-------------|--------------------------|--------------------------------|
 | vhost-net   | `drivers/vhost/net.c`    | Network I/O (tap/macvtap)      |
 | vhost-scsi  | `drivers/vhost/scsi.c`   | SCSI target emulation          |
