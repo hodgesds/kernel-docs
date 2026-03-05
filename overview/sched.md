@@ -17,11 +17,12 @@ handling, workqueues, load balancing, and scheduler topology.
 7. [Scheduler Topology](#7-scheduler-topology)
 8. [PELT (Per-Entity Load Tracking)](#8-pelt-per-entity-load-tracking)
 9. [CFS/EEVDF Internals](#9-cfseevdf-internals)
-10. [Real-Time Scheduler](#10-real-time-scheduler)
-11. [Deadline Scheduler](#11-deadline-scheduler)
-12. [Context Switch](#12-context-switch)
-13. [Locking Summary](#13-locking-summary)
-14. [Source File Reference](#14-source-file-reference)
+10. [EEVDF Scheduler Debugfs Tunables](#10-eevdf-scheduler-debugfs-tunables)
+11. [Real-Time Scheduler](#11-real-time-scheduler)
+12. [Deadline Scheduler](#12-deadline-scheduler)
+13. [Context Switch](#13-context-switch)
+14. [Locking Summary](#14-locking-summary)
+15. [Source File Reference](#15-source-file-reference)
 
 ---
 
@@ -2091,7 +2092,264 @@ One `cfs_bandwidth` exists per `task_group` (cgroup). Per-CPU `cfs_rq` objects d
 
 ---
 
-## 10. Real-Time Scheduler
+## 10. EEVDF Scheduler Debugfs Tunables
+
+**Location:** `/sys/kernel/debug/sched/`
+
+All entries are created by `sched_init_debug()` (`kernel/sched/debug.c:593`) as a `late_initcall`. Requires debugfs mounted at `/sys/kernel/debug`.
+
+### 10.1 base_slice_ns
+
+**Variable:** `sysctl_sched_base_slice` (`kernel/sched/fair.c:79`)
+**Default:** `700000` (0.7 ms)
+**Permissions:** 0644 (read-write)
+
+The fundamental EEVDF time slice. Each task's virtual deadline is computed as:
+
+```
+se->deadline = se->vruntime + calc_delta_fair(se->slice, se)
+```
+
+where `se->slice` is initialized from `sysctl_sched_base_slice`. A task with nice 0 (weight 1024) gets exactly this value as its virtual slice length. Higher-weight tasks get proportionally longer virtual slices (their vruntime advances slower), while lower-weight tasks get shorter ones.
+
+**Scaling:** The value stored in debugfs is the *scaled* value. Internally, a `normalized_sysctl_sched_base_slice` is maintained. When `tunable_scaling` is set to logarithmic (default), the effective slice is:
+
+```
+effective = normalized_value * (1 + ilog2(min(num_online_cpus, 8)))
+```
+
+On an 8-CPU system with logarithmic scaling, the default 700000 ns becomes 700000 * 4 = 2800000 ns (2.8 ms).
+
+Writing to this file updates the scaled value directly; `sched_update_scaling()` recomputes the normalized value by dividing by the current factor.
+
+**Impact:** Lower values increase interactivity and reduce per-task latency at the cost of more context switches. Higher values improve throughput for CPU-bound workloads.
+
+### 10.2 features
+
+**Variable:** `sysctl_sched_features` bitmask (`kernel/sched/core.c:167`)
+**Source:** Feature definitions in `kernel/sched/features.h`
+**Permissions:** 0644 (read-write)
+
+A space-separated list of scheduler feature flags. Enabled features are printed as-is; disabled features are prefixed with `NO_`. Toggle a feature by writing its name (or `NO_name` to disable).
+
+#### EEVDF Placement Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `PLACE_LAG` | on | Preserve lag across sleep/wake cycles using `avg_vruntime`. When a task wakes, its vruntime is set to `avg_vruntime - lag`, restoring its service credit. This is EEVDF placement strategy #1; disabling falls back to strategy #2 (plain avg_vruntime placement). |
+| `PLACE_DEADLINE_INITIAL` | on | Give newly forked tasks half a slice (`se->slice / 2`) as their initial virtual deadline offset, easing them into competition rather than immediately getting a full slice. |
+| `PLACE_REL_DEADLINE` | on | Preserve the relative virtual deadline across CPU migration. When a task migrates, its deadline offset from avg_vruntime is maintained on the destination CPU. |
+
+#### Preemption Control Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `RUN_TO_PARITY` | on | Inhibit wakeup preemption of the current task until it has either reached its 0-lag point (consumed its fair share) or exhausted its slice. Reduces unnecessary preemptions for tasks near their entitlement. |
+| `PREEMPT_SHORT` | on | Allow a waking task with a shorter slice to cancel `RUN_TO_PARITY` protection for the current task. Ensures short-running interactive tasks can still preempt. |
+| `WAKEUP_PREEMPTION` | on | Master switch for wakeup-time preemption. When disabled, newly woken tasks never preempt the current task immediately. |
+
+#### Dequeue Behavior
+
+| Feature | Default | Description |
+|---|---|---|
+| `DELAY_DEQUEUE` | on | Delay dequeueing sleeping tasks until they are selected by `pick_next_entity()` or explicitly woken. Sleeping tasks remain in the rb-tree to burn off negative lag through virtual time progression, ensuring they have positive lag (owed service) when eventually picked. |
+| `DELAY_ZERO` | on | When a delayed-dequeue task is finally dequeued (or woken), clip its lag to zero rather than preserving negative lag. Prevents tasks from accumulating unbounded negative lag across long sleeps. |
+
+#### Cache and Buddy Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `NEXT_BUDDY` | off | Prefer scheduling the last woken task (that failed wakeup preemption) as the next task. Improves cache locality for producer/consumer patterns. |
+| `PICK_BUDDY` | on | Allow `pick_next_entity()` to consider buddy hints set by `yield_to_task()`, `NEXT_BUDDY`, and cgroup dequeue/pick paths. When disabled, buddy hints from `cfs_rq->next` are completely ignored. |
+| `CACHE_HOT_BUDDY` | on | Treat buddy tasks as cache-hot during load balancing, decreasing the likelihood they are migrated away from their current CPU. |
+
+#### Timer Tick Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `HRTICK` | off | Use high-resolution timers for precise preemption of CFS tasks. Arms an hrtimer for the exact moment the current task's slice expires, rather than waiting for the next periodic tick. Increases accuracy but adds timer overhead. |
+| `HRTICK_DL` | off | Same as `HRTICK` but for SCHED_DEADLINE tasks. |
+
+#### SMP and Load Balancing Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `TTWU_QUEUE` | on (off on PREEMPT_RT) | Queue remote wakeups on the target CPU's wake list and process them via scheduler IPI, rather than acquiring the remote rq lock directly. Reduces cross-CPU `rq->lock` contention. Disabled on PREEMPT_RT because the IPI-based wake list can cause priority inversions. |
+| `SIS_UTIL` | on | Limit superfluous LLC domain scans during `select_idle_sibling()`. Uses CPU utilization data to estimate how many idle CPUs to scan before giving up, reducing wakeup latency on loaded systems. |
+| `NONTASK_CAPACITY` | on | Decrement reported CPU capacity based on time spent in IRQ and steal time. Gives the load balancer a more accurate picture of available CPU capacity. |
+| `RT_PUSH_IPI` | on | (Requires `HAVE_RT_PUSH_IPI`.) When multiple CPUs simultaneously lower their RT priority, send an IPI to the overloaded CPU rather than all CPUs contending on its rq lock. Avoids thundering herd on RT task migration. |
+| `RT_RUNTIME_SHARE` | off | Allow RT runtime borrowing between CPUs. When a CPU exhausts its RT bandwidth quota, it can borrow unused quota from other CPUs. |
+| `LB_MIN` | off | Skip load balancing for very small imbalances. |
+| `ATTACH_AGE_LOAD` | on | Age (decay) a migrating task's load contribution before attaching it to the destination CPU. Prevents load spikes from stale PELT data. |
+| `NI_RANDOM` | on | Randomize newidle balancing frequency proportional to its success rate. CPUs that historically find work during newidle balance will do it more often. |
+
+#### Wake Affinity Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `WA_IDLE` | on | Enable wake-affinity: prefer placing a woken task on an idle CPU in the waker's LLC domain, exploiting shared cache. |
+| `WA_WEIGHT` | on | Weight wake-affinity decisions by the waker/wakee relationship. Track `wakee_flips` to detect fan-out patterns (one task waking many) and disable affinity when detected. |
+| `WA_BIAS` | on | Bias wake-affinity toward the waker's CPU or its last-used CPU when both are candidates. |
+
+#### Utility and Debug Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `UTIL_EST` | on | Use estimated CPU utilization (`util_est`) in addition to PELT for scheduling decisions. Captures the peak utilization of recently dequeued tasks, providing a faster signal than PELT's exponential decay for bursty workloads. |
+| `LATENCY_WARN` | off | Enable scheduling latency warnings. When `TIF_NEED_RESCHED` has been set for longer than `latency_warn_ms`, print a warning with a stack trace. See `latency_warn_ms` and `latency_warn_once` below. |
+| `WARN_DOUBLE_CLOCK` | off | Warn when `update_rq_clock()` is called multiple times within the same `rq->lock` section. Debug aid for finding redundant clock updates. |
+
+### 10.3 preempt
+
+**Variable:** `preempt_dynamic_mode` (`kernel/sched/core.c:7591`)
+**Requires:** `CONFIG_PREEMPT_DYNAMIC`
+**Permissions:** 0644 (read-write)
+
+Runtime-switchable preemption model. Reading shows all available modes with the active mode in parentheses. Write a mode name to switch.
+
+| Mode | Description |
+|---|---|
+| `none` | No preemption. Tasks run until they voluntarily yield or block. Only `cond_resched()` checks are active. Maximizes throughput for batch workloads. |
+| `voluntary` | Voluntary preemption points. `cond_resched()` and `might_resched()` checks enabled. Balances throughput and latency. |
+| `full` | Full kernel preemption. Any kernel code can be preempted at preempt-safe points (when `preempt_count == 0`). Best latency for interactive and real-time-ish workloads. |
+| `lazy` | (Requires `CONFIG_ARCH_HAS_PREEMPT_LAZY`.) Full preemption with lazy rescheduling. Sets `TIF_NEED_RESCHED_LAZY` instead of `TIF_NEED_RESCHED` for non-urgent preemptions, deferring context switches to natural scheduling points (syscall return, interrupt return to user). Aims to combine the throughput of `voluntary` with the worst-case latency of `full`. |
+
+**Note:** On `CONFIG_PREEMPT_RT` kernels, only `full` and `lazy` are available.
+
+Switching modes takes effect immediately via static keys that gate preemption checks throughout the kernel.
+
+### 10.4 tunable_scaling
+
+**Variable:** `sysctl_sched_tunable_scaling` (`kernel/sched/fair.c:72`)
+**Default:** `1` (logarithmic)
+**Permissions:** 0644 (read-write)
+
+Controls how `base_slice_ns` is scaled based on CPU count:
+
+| Value | Name | Factor | Formula |
+|---|---|---|---|
+| `0` | none | 1 | No scaling; use the normalized value directly |
+| `1` | logarithmic | 1 + ilog2(cpus) | Default. CPUs capped at 8 for the factor calculation |
+| `2` | linear | cpus | Linear scaling with online CPU count (capped at 8) |
+
+**Implementation:** `get_update_sysctl_factor()` (`kernel/sched/fair.c:192`) computes the factor. `sched_update_scaling()` (`kernel/sched/fair.c:1043`) recomputes the normalized base slice when this value changes. Writing a new value triggers immediate recalculation.
+
+**Example:** With 4 CPUs:
+- `none` (0): factor=1, effective slice = 700000 ns
+- `logarithmic` (1): factor=1+ilog2(4)=3, effective slice = 2100000 ns
+- `linear` (2): factor=4, effective slice = 2800000 ns
+
+### 10.5 migration_cost_ns
+
+**Variable:** `sysctl_sched_migration_cost` (`kernel/sched/fair.c:82`)
+**Default:** `500000` (0.5 ms)
+**Permissions:** 0644 (read-write)
+
+Threshold for considering a task "cache-hot". Used in two contexts:
+
+1. **Task freshness check** (`task_hot()` in `kernel/sched/fair.c:9308`): A task is considered cache-hot (and thus resistant to migration) if `rq_clock_task(rq) - p->se.exec_start < sysctl_sched_migration_cost`. Cache-hot tasks are skipped during load balancing unless the imbalance is severe.
+
+2. **Wake affinity** (`wake_wide()` in `kernel/sched/fair.c:8711`): Influences whether wake-affinity overrides are applied.
+
+3. **Max idle balance cost** (`kernel/sched/fair.c:12319`): The initial `rq->max_idle_balance_cost` is set to this value.
+
+**Special values:**
+- `0`: Tasks are never considered cache-hot; always eligible for migration
+- `-1` (4294967295 as u32): Tasks are always considered cache-hot; migration only on severe imbalance
+
+### 10.6 nr_migrate
+
+**Variable:** `sysctl_sched_nr_migrate` (`kernel/sched/core.c:186`)
+**Default:** `32` (8 on `CONFIG_PREEMPT_RT`)
+**Permissions:** 0644 (read-write)
+
+Maximum number of tasks to migrate in a single load-balancing pass. Load balancing iterates with IRQs disabled (holding `rq->lock`), so this limits the maximum hold time. After migrating `nr_migrate` tasks, the balancer releases the lock and re-acquires it to allow pending interrupts to be serviced.
+
+Lower values reduce worst-case IRQ latency during load balancing but may require more balance passes to resolve large imbalances.
+
+### 10.7 latency_warn_ms
+
+**Variable:** `sysctl_resched_latency_warn_ms` (`kernel/sched/core.c:179`)
+**Default:** `100` (ms)
+**Permissions:** 0644 (read-write)
+
+Threshold in milliseconds for scheduling latency warnings. When the `LATENCY_WARN` feature flag is enabled and `TIF_NEED_RESCHED` has been set on a task for longer than this value, the kernel prints a warning with a stack trace via `cpu_resched_latency()` (`kernel/sched/core.c:5496`).
+
+This detects situations where a CPU fails to reschedule promptly — typically caused by long-running kernel code with preemption disabled or missing `cond_resched()` calls.
+
+### 10.8 latency_warn_once
+
+**Variable:** `sysctl_resched_latency_warn_once` (`kernel/sched/core.c:180`)
+**Default:** `1` (warn once)
+**Permissions:** 0644 (read-write)
+
+When set to `1`, only one scheduling latency warning is emitted per boot (using `printk_deferred_once`). Set to `0` to get a warning every time the threshold is exceeded. Useful for continuous monitoring but can flood the log on systems with persistent latency issues.
+
+### 10.9 fair_server (per-CPU)
+
+**Location:** `/sys/kernel/debug/sched/fair_server/cpu<N>/`
+**Permissions:** 0644 (read-write)
+**Setup:** `debugfs_fair_server_init()` (`kernel/sched/debug.c:548`)
+
+The fair server is a per-CPU deadline-class scheduling entity (`rq->fair_server`, type `struct sched_dl_entity`) that provides bandwidth guarantees for CFS tasks against RT/DL starvation. It reserves a fraction of CPU time for CFS tasks by running them inside a deadline server with the configured period and runtime.
+
+Each CPU directory contains:
+
+| File | Default | Description |
+|---|---|---|
+| `period` | `1000000000` (1 second) | The replenishment period in nanoseconds. The server's bandwidth budget is reset every period. |
+| `runtime` | `50000000` (50 ms) | The runtime budget per period in nanoseconds. CFS tasks get at most this much CPU time per period through the server. |
+
+**Constraints** (enforced in `sched_server_write_common()`, `kernel/sched/debug.c:336`):
+- `runtime <= period`
+- `period >= 100 us` (100,000 ns)
+- `period <= ~4.194 seconds` (2^22 microseconds)
+
+**Effective bandwidth:** `runtime / period`. With defaults, CFS tasks are guaranteed 50 ms out of every 1000 ms (5%) of CPU time even under full RT/DL load. The remaining 950 ms may still be used by CFS if no RT/DL tasks are runnable.
+
+**Disabling:** Writing `0` to `runtime` disables the fair server on that CPU. A warning is printed:
+```
+Fair server disabled on CPU N, system may malfunction due to starvation
+```
+Re-enabling by writing a nonzero runtime prints a corresponding enablement message.
+
+**Note:** Changes take effect immediately. The server is stopped, parameters are applied via `dl_server_apply_params()`, and the server is restarted, all under `rq->lock`.
+
+### 10.10 verbose
+
+**Variable:** `sched_debug_verbose` (`kernel/sched/debug.c:277`)
+**Default:** `N` (disabled)
+**Permissions:** 0644 (read-write)
+
+Boolean flag (`Y`/`N`). When enabled, creates a `domains/` subdirectory under `/sys/kernel/debug/sched/` containing per-CPU scheduler domain topology information. Each domain level exposes its flags, group capacities, and balancing parameters.
+
+When disabled, the `domains/` directory is removed. Toggling this at runtime triggers `update_sched_domain_debugfs()` to create or tear down the domain debugfs entries.
+
+### 10.11 debug (read-only)
+
+**Location:** `/sys/kernel/debug/sched/debug`
+**Permissions:** 0444 (read-only)
+**Implementation:** `sched_debug_fops` using seq_file (`kernel/sched/debug.c:321`)
+
+A comprehensive read-only dump of the entire scheduler state. Output includes:
+
+1. **Header** (`sched_debug_header()`, `kernel/sched/debug.c:1092`):
+   - Kernel version, ktime, jiffies, `sched_clock_stable()` status
+   - Current `sysctl_sched_base_slice`, `sysctl_sched_features` bitmask, `sysctl_sched_tunable_scaling`
+
+2. **Per-CPU section** (`print_cpu()`, `kernel/sched/debug.c:1027`):
+   - CPU frequency, `nr_running`, `nr_switches`, `nr_uninterruptible`
+   - `curr->pid`, clock values, `avg_idle`, `max_idle_balance_cost`
+   - Per-cgroup `cfs_rq` statistics: `left_deadline`, `min_vruntime`, `avg_vruntime`, `spread`, `nr_queued`, PELT load/runnable/util averages
+   - Scheduling entity details for group entities
+   - RT and DL runqueue statistics
+   - List of all runnable tasks with vruntime, deadline, slice, and weight
+
+This output is also available via SysRq-T (triggered by `sysrq_sched_debug_show()`).
+
+---
+
+## 11. Real-Time Scheduler
 
 ### `struct rt_rq` — `kernel/sched/sched.h:814`
 
@@ -2176,7 +2434,7 @@ Invoked when a CPU's RT priority decreases (e.g., RT task blocks):
 
 ---
 
-## 11. Deadline Scheduler
+## 12. Deadline Scheduler
 
 ### `struct sched_dl_entity` — `include/linux/sched.h:608`
 
@@ -2270,7 +2528,7 @@ Period limits: `sched_deadline_period_min_us` (100us) and `sched_deadline_period
 
 ---
 
-## 12. Context Switch
+## 13. Context Switch
 
 ### `__schedule()` Flow — `kernel/sched/core.c:6644`
 
@@ -2334,7 +2592,7 @@ When switching to a kernel thread (`next->mm == NULL`), the CPU does not reload 
 
 ---
 
-## 13. Locking Summary
+## 14. Locking Summary
 
 | Lock | Type | Protects | Key File |
 |---|---|---|---|
@@ -2358,7 +2616,7 @@ When switching to a kernel thread (`next->mm == NULL`), the CPU does not reload 
 
 ---
 
-## 14. Source File Reference
+## 15. Source File Reference
 
 | File | Purpose | Key Functions / Symbols |
 |---|---|---|
