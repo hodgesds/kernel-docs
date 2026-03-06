@@ -98,8 +98,8 @@ kernel. It enables:
 │  │         │                                           │    │
 │  │         ▼                                           │    │
 │  │  ┌──────────────┐    ┌──────────────┐               │    │
-│  │  │  BPF Program │───▶│   BPF Maps   │               │    │
-│  │  │  (attached)  │◀───│  (storage)   │               │    │
+│  │  │  BPF Program │──▶│   BPF Maps   │               │    │
+│  │  │  (attached)  │◀──│  (storage)   │               │    │
 │  │  └──────────────┘    └──────────────┘               │    │
 │  │         │                   ▲                       │    │
 │  │         │                   │                       │    │
