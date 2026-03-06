@@ -38,23 +38,23 @@ tasks can access which resources. The core layers are:
 │       │                                                           │
 │       ▼                                                           │
 │  ┌─────────────────────────────────────────────────────────┐      │
-│  │  1. DAC (Discretionary Access Control)                   │      │
-│  │     owner/group/other mode bits + POSIX ACLs             │      │
-│  │     Checked against: fsuid, fsgid, supplementary groups  │      │
+│  │  1. DAC (Discretionary Access Control)                  │      │
+│  │     owner/group/other mode bits + POSIX ACLs            │      │
+│  │     Checked against: fsuid, fsgid, supplementary groups │      │
 │  └────────────────────┬────────────────────────────────────┘      │
 │                       │ denied?                                   │
 │                       ▼                                           │
 │  ┌─────────────────────────────────────────────────────────┐      │
-│  │  2. Capability Override                                  │      │
+│  │  2. Capability Override                                 │      │
 │  │     CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_FOWNER   │      │
-│  │     Checked against: cap_effective in struct cred        │      │
+│  │     Checked against: cap_effective in struct cred       │      │
 │  └────────────────────┬────────────────────────────────────┘      │
 │                       │                                           │
 │                       ▼                                           │
 │  ┌─────────────────────────────────────────────────────────┐      │
-│  │  3. LSM (Mandatory Access Control)                       │      │
-│  │     SELinux, AppArmor, Landlock, BPF LSM                 │      │
-│  │     Always checked regardless of DAC outcome             │      │
+│  │  3. LSM (Mandatory Access Control)                      │      │
+│  │     SELinux, AppArmor, Landlock, BPF LSM                │      │
+│  │     Always checked regardless of DAC outcome            │      │
 │  └─────────────────────────────────────────────────────────┘      │
 │                                                                   │
 │  All three layers must grant access. DAC + capability override    │
@@ -109,24 +109,24 @@ struct cred {
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    UID/GID Pairs in struct cred                   │
+│                    UID/GID Pairs in struct cred                 │
 ├──────────┬──────────────────────────────────────────────────────┤
 │ uid/gid  │ Real ID. Identifies who the process actually belongs │
 │          │ to. Used for signal delivery permission checks and   │
 │          │ resource accounting. Set at login, inherited across  │
-│          │ fork(). Only changeable with CAP_SETUID/CAP_SETGID. │
+│          │ fork(). Only changeable with CAP_SETUID/CAP_SETGID.  │
 ├──────────┼──────────────────────────────────────────────────────┤
 │ euid/    │ Effective ID. Used for most privilege checks:        │
-│ egid     │ capability evaluation, file creation ownership,     │
+│ egid     │ capability evaluation, file creation ownership,      │
 │          │ IPC permissions. Set by setuid binaries on exec.     │
 ├──────────┼──────────────────────────────────────────────────────┤
-│ suid/    │ Saved ID. Preserves the effective ID across an exec │
-│ sgid     │ so a setuid program can drop privileges temporarily │
-│          │ (set euid=uid) then regain them (set euid=suid).    │
+│ suid/    │ Saved ID. Preserves the effective ID across an exec  │
+│ sgid     │ so a setuid program can drop privileges temporarily  │
+│          │ (set euid=uid) then regain them (set euid=suid).     │
 ├──────────┼──────────────────────────────────────────────────────┤
-│ fsuid/   │ Filesystem ID. Used specifically by VFS permission  │
-│ fsgid    │ checks (acl_permission_check). Normally shadows     │
-│          │ euid/egid — set automatically when euid/egid change.│
+│ fsuid/   │ Filesystem ID. Used specifically by VFS permission   │
+│ fsgid    │ checks (acl_permission_check). Normally shadows      │
+│          │ euid/egid — set automatically when euid/egid change. │
 │          │ Can be set independently via setfsuid()/setfsgid().  │
 │          │ Exists so NFS servers can access files as a client   │
 │          │ user without granting that user signal privileges.   │
@@ -336,15 +336,15 @@ struct inode {
 
 ```
 ┌───────────┬──────────────────────────────────────────────────────┐
-│ S_ISUID   │ On exec: set euid to file owner (see §10)           │
+│ S_ISUID   │ On exec: set euid to file owner (see §10)            │
 │           │ On regular files only. Requires exec permission.     │
 ├───────────┼──────────────────────────────────────────────────────┤
-│ S_ISGID   │ On exec (with S_IXGRP): set egid to file group      │
+│ S_ISGID   │ On exec (with S_IXGRP): set egid to file group       │
 │           │ On directories: new files inherit parent's group     │
 │           │ On files without S_IXGRP: mandatory locking (legacy) │
 ├───────────┼──────────────────────────────────────────────────────┤
-│ S_ISVTX   │ Sticky bit. On directories: only file owner, dir    │
-│ (sticky)  │ owner, or CAP_FOWNER can delete/rename files within │
+│ S_ISVTX   │ Sticky bit. On directories: only file owner, dir     │
+│ (sticky)  │ owner, or CAP_FOWNER can delete/rename files within  │
 └───────────┴──────────────────────────────────────────────────────┘
 ```
 
@@ -603,23 +603,23 @@ relevant capabilities and their override scope:
 
 ```
 ┌──────────────────────┬────────────────────────────────────────────────┐
-│ CAP_DAC_OVERRIDE     │ Override read+write on any file.              │
-│                      │ Override execute only if at least one exec    │
-│                      │ bit (S_IXUGO) is set on the file.            │
-│                      │ Override all permissions on directories.      │
+│ CAP_DAC_OVERRIDE     │ Override read+write on any file.               │
+│                      │ Override execute only if at least one exec     │
+│                      │ bit (S_IXUGO) is set on the file.              │
+│                      │ Override all permissions on directories.       │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ CAP_DAC_READ_SEARCH  │ Override read on files.                       │
-│                      │ Override read+execute (search) on dirs.       │
+│ CAP_DAC_READ_SEARCH  │ Override read on files.                        │
+│                      │ Override read+execute (search) on dirs.        │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ CAP_FOWNER           │ Override checks that require fsuid == i_uid.  │
-│                      │ Needed for: chmod on non-owned files,         │
-│                      │ setting xattrs, removing sticky-bit files.    │
+│ CAP_FOWNER           │ Override checks that require fsuid == i_uid.   │
+│                      │ Needed for: chmod on non-owned files,          │
+│                      │ setting xattrs, removing sticky-bit files.     │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ CAP_CHOWN            │ Override chown/chgrp restrictions.            │
+│ CAP_CHOWN            │ Override chown/chgrp restrictions.             │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ CAP_FSETID           │ Don't clear S_ISUID/S_ISGID on chown.        │
-│                      │ Allow S_ISGID on files where group doesn't   │
-│                      │ match.                                        │
+│ CAP_FSETID           │ Don't clear S_ISUID/S_ISGID on chown.          │
+│                      │ Allow S_ISGID on files where group doesn't     │
+│                      │ match.                                         │
 └──────────────────────┴────────────────────────────────────────────────┘
 ```
 
@@ -676,19 +676,19 @@ long __sys_setuid(uid_t uid)
 
 ```
 ┌──────────────────┬───────────────────────────────────────────────────┐
-│ Syscall          │ Unprivileged rules (no CAP_SETUID)               │
+│ Syscall          │ Unprivileged rules (no CAP_SETUID)                │
 ├──────────────────┼───────────────────────────────────────────────────┤
-│ setuid(uid)      │ Can set euid+fsuid to current {uid, suid}.       │
+│ setuid(uid)      │ Can set euid+fsuid to current {uid, suid}.        │
 │                  │ Cannot change uid (real).                         │
 ├──────────────────┼───────────────────────────────────────────────────┤
-│ setreuid(r, e)   │ ruid: can set to old {uid, euid}                 │
+│ setreuid(r, e)   │ ruid: can set to old {uid, euid}                  │
 │                  │ euid: can set to old {uid, euid, suid}            │
 │                  │ If ruid changes or euid != old uid: suid = euid   │
 ├──────────────────┼───────────────────────────────────────────────────┤
-│ setresuid(r,e,s) │ Each can be set to any of current {uid,euid,suid}│
+│ setresuid(r,e,s) │ Each can be set to any of current {uid,euid,suid} │
 │                  │ Any other value requires CAP_SETUID.              │
 ├──────────────────┼───────────────────────────────────────────────────┤
-│ setfsuid(uid)    │ Can set fsuid to current {uid, euid, suid, fsuid}│
+│ setfsuid(uid)    │ Can set fsuid to current {uid, euid, suid, fsuid} │
 │                  │ Returns the old fsuid value.                      │
 └──────────────────┴───────────────────────────────────────────────────┘
 ```
@@ -1134,7 +1134,7 @@ Permission checking via `chown_ok()` and `chgrp_ok()` in `fs/attr.c`:
 │                                                                   │
 │ inode_owner_or_capable() — fs/inode.c:2695:                       │
 │   Returns true if fsuid == file owner, or if the task has         │
-│   CAP_FOWNER and the inode's UID is mapped in the task's ns.     │
+│   CAP_FOWNER and the inode's UID is mapped in the task's ns.      │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1249,10 +1249,10 @@ copying from `&init_task` to get root-level access.
 │ SECURE_NOROOT            │ UID 0 has no special privilege.         │
 │                          │ Root behaves like any other user.       │
 ├──────────────────────────┼─────────────────────────────────────────┤
-│ SECURE_NO_SETUID_FIXUP   │ Don't adjust capabilities when         │
+│ SECURE_NO_SETUID_FIXUP   │ Don't adjust capabilities when          │
 │                          │ setuid/setgid syscalls change UIDs.     │
 ├──────────────────────────┼─────────────────────────────────────────┤
-│ SECURE_KEEP_CAPS         │ Don't clear caps when all UIDs become  │
+│ SECURE_KEEP_CAPS         │ Don't clear caps when all UIDs become   │
 │                          │ non-root. Cleared after every exec.     │
 ├──────────────────────────┼─────────────────────────────────────────┤
 │ SECURE_NO_CAP_AMBIENT    │ Prevent raising ambient capabilities.   │
