@@ -1260,7 +1260,7 @@ pervasively in new kernel code.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              Guard/Cleanup Infrastructure                    │
+│              Guard/Cleanup Infrastructure                   │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  Problem: Manual lock/unlock pairs are error-prone          │
@@ -1363,7 +1363,7 @@ guard(preempt)();       /* preempt_disable/enable */
 │  guard(mutex_intr)           mutex_lock_interruptible       │
 │                                                             │
 │  RW semaphore guards (include/linux/rwsem.h):               │
-│  ────────────────────────────────────────────                │
+│  ────────────────────────────────────────────               │
 │  guard(rwsem_read)           down_read/up_read              │
 │  guard(rwsem_read_try)       trylock (conditional)          │
 │  guard(rwsem_read_intr)      interruptible (conditional)    │
@@ -1371,7 +1371,7 @@ guard(preempt)();       /* preempt_disable/enable */
 │  guard(rwsem_write_try)      trylock (conditional)          │
 │                                                             │
 │  Zero-argument guards (no pointer parameter):               │
-│  ────────────────────────────────────────────                │
+│  ────────────────────────────────────────────               │
 │  guard(rcu)                  rcu_read_lock/unlock           │
 │  guard(irq)                  local_irq_disable/enable       │
 │  guard(irqsave)              local_irq_save/restore         │

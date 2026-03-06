@@ -819,10 +819,10 @@ static __always_inline void exit_to_user_mode(void)
          │    swapgs                   │
          │    SWITCH_TO_KERNEL_CR3     │
          │    switch to kernel stack   │
-         │    PUSH_AND_CLEAR_REGS     │
-         │    IBRS_ENTER              │
-         │    UNTRAIN_RET             │
-         │    CLEAR_BRANCH_HISTORY    │
+         │    PUSH_AND_CLEAR_REGS      │
+         │    IBRS_ENTER               │
+         │    UNTRAIN_RET              │
+         │    CLEAR_BRANCH_HISTORY     │
          └──────────────┬──────────────┘
                         |
          ┌──────────────┴──────────────┐

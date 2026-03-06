@@ -177,14 +177,14 @@ either the old or new version of data, never a partially updated state.
 │    │        │        │        │        (all CPUs passed     │
 │    │        │        │        │         through)            │
 │    │        │        │        │                             │
-│    ├────────┼────────┼────────┼────── Grace period ends    │
+│    ├────────┼────────┼────────┼────── Grace period ends     │
 │    │        │        │        │        (synchronize_rcu     │
 │    │        │        │        │         returns)            │
 │    │        │        │        │                             │
-│    │        │        ┌────┴────┐   New reader (after GP)   │
-│    │        │        │ Reader  │   sees new version        │
-│    │        │        └────┬────┘                           │
-│    ▼        ▼        ▼    ▼                                │
+│    │        │        ┌────┴────┐   New reader (after GP)    │
+│    │        │        │ Reader  │   sees new version         │
+│    │        │        └────┬────┘                            │
+│    ▼        ▼        ▼    ▼                                 │
 │                                                             │
 │  QS = Quiescent State                                       │
 │       (context switch, idle, user mode)                     │
@@ -835,7 +835,8 @@ void __rcu *ptr;  /* Pointer protected by RCU */
 │  5. RT task starving RCU kthreads                           │
 │                                                             │
 │  Tuning stall detection:                                    │
-│  $ echo 60 > /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout│
+│  $ echo 60 > \                                              │
+│    /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout    │
 │                                                             │
 │  Debugging:                                                 │
 │  - Check dmesg for full stall report                        │
@@ -1189,7 +1190,11 @@ RCU_FANOUT_3 = RCU_FANOUT_2 * RCU_FANOUT (max CPUs: 65536 → 3 levels)
 RCU_FANOUT_4 = RCU_FANOUT_3 * RCU_FANOUT (max CPUs: 4M → 4 levels)
 ```
 
-The tree is stored as a dense array in `rcu_state.node[]`. `rcu_state.level[i]` points to the first node at level `i`. Level 0 is the root; the deepest level contains leaf nodes, each covering `RCU_FANOUT_LEAF` CPUs. The `qsmask` at each level has one bit per child: leaf nodes have one bit per CPU, internal nodes have one bit per child `rcu_node`.
+The tree is stored as a dense array in `rcu_state.node[]`. `rcu_state.level[i]`
+points to the first node at level `i`. Level 0 is the root; the deepest level
+contains leaf nodes, each covering `RCU_FANOUT_LEAF` CPUs. The `qsmask` at each
+level has one bit per child: leaf nodes have one bit per CPU, internal nodes
+have one bit per child `rcu_node`.
 
 ```
 Example: 64 CPUs, RCU_FANOUT_LEAF=16, RCU_FANOUT=64
@@ -1248,8 +1253,16 @@ The kthread calls `rcu_bind_gp_kthread()` at start to pin itself to a housekeepi
 
 1. Acquires root `rnp->lock`; if `gp_flags == 0`, returns false (spurious wakeup).
 2. Calls `rcu_seq_start(&rcu_state.gp_seq)` — odd value = GP in progress.
-3. Sets `gp_state = RCU_GP_ONOFF`; iterates leaf nodes with `rcu_for_each_leaf_node()`. For each leaf, holds `ofl_lock` + `rnp->lock` and applies pending hotplug: copies `qsmaskinitnext` into `qsmaskinit`, propagates changes upward via `rcu_init_new_rnp()` / `rcu_cleanup_dead_rnp()`.
-4. Sets `gp_state = RCU_GP_INIT`; iterates **all** nodes breadth-first with `rcu_for_each_node_breadth_first()`. For each node: acquires `rnp->lock`, copies `rnp->qsmask = rnp->qsmaskinit`, writes `rnp->gp_seq = rcu_state.gp_seq`. For offline CPUs present in `qsmask & ~qsmaskinitnext`, immediately calls `rcu_report_qs_rnp()` to clear their bits.
+3. Sets `gp_state = RCU_GP_ONOFF`; iterates leaf nodes with
+   `rcu_for_each_leaf_node()`. For each leaf, holds `ofl_lock` + `rnp->lock`
+   and applies pending hotplug: copies `qsmaskinitnext` into `qsmaskinit`,
+   propagates changes upward via `rcu_init_new_rnp()` /
+   `rcu_cleanup_dead_rnp()`.
+4. Sets `gp_state = RCU_GP_INIT`; iterates **all** nodes breadth-first with
+   `rcu_for_each_node_breadth_first()`. For each node: acquires `rnp->lock`,
+   copies `rnp->qsmask = rnp->qsmaskinit`, writes `rnp->gp_seq =
+   rcu_state.gp_seq`. For offline CPUs present in `qsmask & ~qsmaskinitnext`,
+   immediately calls `rcu_report_qs_rnp()` to clear their bits.
 5. Returns `true`.
 
 ### `rcu_gp_fqs_loop()` (`kernel/rcu/tree.c:2014-2094`)
@@ -1286,12 +1299,17 @@ On each iteration:
 Called by the scheduler from `__schedule()` on every context switch:
 
 1. `rcu_qs()` — clears `rdp->cpu_no_qs.b.norm` (the normal-QS-needed flag).
-2. If `rdp->rcu_urgent_qs` and `rcu_need_heavy_qs` are set, calls `rcu_momentary_eqs()` which atomically increments `ct->state` by `2 * CT_RCU_WATCHING` — passes through an even value (EQS) and back, satisfying any remote watcher.
+2. If `rdp->rcu_urgent_qs` and `rcu_need_heavy_qs` are set, calls
+   `rcu_momentary_eqs()` which atomically increments `ct->state` by `2 *
+   CT_RCU_WATCHING` — passes through an even value (EQS) and back, satisfying
+   any remote watcher.
 3. Calls `rcu_tasks_qs()` for RCU-tasks.
 
 ### `note_gp_changes()` Fast Path (`kernel/rcu/tree.c:1314-1333`)
 
-Called from `rcu_check_quiescent_state()` (tick path). Uses `raw_spin_trylock_rcu_node()` — if lock unavailable, returns silently (deferred to next tick). If acquired:
+Called from `rcu_check_quiescent_state()` (tick path). Uses
+`raw_spin_trylock_rcu_node()` — if lock unavailable, returns silently (deferred
+to next tick). If acquired:
 
 1. `__note_gp_changes(rnp, rdp)`:
    - If `rdp->gp_seq` lags `rnp->gp_seq`: GP ended — calls `rcu_advance_cbs()`, clears `core_needs_qs`.
@@ -1351,17 +1369,27 @@ The four segments (`include/linux/rcu_segcblist.h:60-63`):
 | 2 | `RCU_NEXT_READY_TAIL` | Waiting for next GP (accelerated) |
 | 3 | `RCU_NEXT_TAIL` | Newly enqueued, GP unknown |
 
-The `tails[]` array holds `**` pointers to the `next` field of the last element in each segment. When a segment is empty, `tails[seg-1] == tails[seg]`.
+The `tails[]` array holds `**` pointers to the `next` field of the last element
+in each segment. When a segment is empty, `tails[seg-1] == tails[seg]`.
 
 ### Callback Advancement
 
-`rcu_segcblist_advance(rsclp, seq)` (`kernel/rcu/rcu_segcblist.c:469-508`): Scans `WAIT_TAIL` through `NEXT_READY_TAIL`. For each segment whose `gp_seq[i] <= seq`, collapses it into `DONE_TAIL`. Then compacts remaining segments downward.
+`rcu_segcblist_advance(rsclp, seq)` (`kernel/rcu/rcu_segcblist.c:469-508`):
+Scans `WAIT_TAIL` through `NEXT_READY_TAIL`. For each segment whose `gp_seq[i]
+<= seq`, collapses it into `DONE_TAIL`. Then compacts remaining segments
+downward.
 
-`rcu_segcblist_accelerate(rsclp, seq)` (`kernel/rcu/rcu_segcblist.c:526-580`): When a GP number becomes available earlier than estimated, merges `NEXT_TAIL` into `NEXT_READY_TAIL` (or `WAIT_TAIL`) and stamps with `seq`.
+`rcu_segcblist_accelerate(rsclp, seq)` (`kernel/rcu/rcu_segcblist.c:526-580`):
+When a GP number becomes available earlier than estimated, merges `NEXT_TAIL`
+into `NEXT_READY_TAIL` (or `WAIT_TAIL`) and stamps with `seq`.
 
-`rcu_accelerate_cbs()` (`kernel/rcu/tree.c:1135`): Snaps `rcu_state.gp_seq` and calls `rcu_segcblist_accelerate()`. If the accelerated GP is not yet requested, calls `rcu_start_this_gp()`.
+`rcu_accelerate_cbs()` (`kernel/rcu/tree.c:1135`):
+Snaps `rcu_state.gp_seq` and calls `rcu_segcblist_accelerate()`. If the
+accelerated GP is not yet requested, calls `rcu_start_this_gp()`.
 
-`rcu_advance_cbs()` (`kernel/rcu/tree.c:1211`): Calls `rcu_segcblist_advance()` with `rnp->gp_seq` then `rcu_accelerate_cbs()` to label remaining pending callbacks.
+`rcu_advance_cbs()` (`kernel/rcu/tree.c:1211`):
+Calls `rcu_segcblist_advance()` with `rnp->gp_seq` then `rcu_accelerate_cbs()`
+to label remaining pending callbacks.
 
 ### `rcu_do_batch()` (`kernel/rcu/tree.c:2490-2600`)
 
@@ -1387,7 +1415,10 @@ Enabled with `rcu_nocbs=<cpulist>` boot parameter. Two kthreads per offloaded CP
 - Sleeps on `rdp->nocb_cb_wq`
 - On wake: `rcu_momentary_eqs()` for a QS, then `rcu_do_batch(rdp)`
 
-**Bypass list** (`rdp->nocb_bypass`, type `struct rcu_cblist`): Lock-contention bypass for high `call_rcu()` rates exceeding `nocb_nobypass_lim_per_jiffy` (default `16000/HZ`). Callbacks enqueued under `nocb_bypass_lock` (lighter than `nocb_lock`). Flushed by GP kthread via `rcu_nocb_try_flush_bypass()`.
+**Bypass list** (`rdp->nocb_bypass`, type `struct rcu_cblist`): Lock-contention
+bypass for high `call_rcu()` rates exceeding `nocb_nobypass_lim_per_jiffy`
+(default `16000/HZ`). Callbacks enqueued under `nocb_bypass_lock` (lighter than
+`nocb_lock`). Flushed by GP kthread via `rcu_nocb_try_flush_bypass()`.
 
 ---
 
@@ -1411,9 +1442,13 @@ struct context_tracking {
 
 ### Entering/Exiting EQS
 
-Transitions happen via `ct_state_inc(CT_RCU_WATCHING)` which atomically adds 4 to `state`. Each enter/exit increments by one unit (4), so two increments advance by 8, making a full EQS cycle detectable by comparing snapshots.
+Transitions happen via `ct_state_inc(CT_RCU_WATCHING)` which atomically adds 4
+to `state`. Each enter/exit increments by one unit (4), so two increments
+advance by 8, making a full EQS cycle detectable by comparing snapshots.
 
-`rcu_momentary_eqs()` (`kernel/rcu/tree.c:370`): atomically adds `2 * CT_RCU_WATCHING` — passes through one even value and back to odd, synthesizing a zero-duration EQS visible to remote watchers.
+`rcu_momentary_eqs()` (`kernel/rcu/tree.c:370`):
+atomically adds `2 * CT_RCU_WATCHING` — passes through one even value and back
+to odd, synthesizing a zero-duration EQS visible to remote watchers.
 
 ### How the GP Kthread Detects Idle CPUs
 
@@ -1425,7 +1460,9 @@ if (rcu_watching_snap_in_eqs(rdp->watching_snap)):
     // CPU is currently idle — immediate QS, report it
 ```
 
-On subsequent FQS, `rcu_watching_snap_recheck(rdp)` checks if `ct_rcu_watching_cpu_acquire(cpu) != snap` — counter changed means CPU passed through an EQS.
+On subsequent FQS, `rcu_watching_snap_recheck(rdp)` checks if
+`ct_rcu_watching_cpu_acquire(cpu) != snap` — counter changed means CPU passed
+through an EQS.
 
 `rcu_is_cpu_rrupt_from_idle()` (`kernel/rcu/tree.c:390`): checks `ct_nesting() <= 0` for the scheduler tick to classify a tick from idle as a QS.
 

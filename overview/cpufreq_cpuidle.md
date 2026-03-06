@@ -39,24 +39,24 @@ three layers:
 
 ```
   +------------------------------------------------------------------+
-  |                        User Space                                 |
+  |                        User Space                                |
   |    /sys/devices/system/cpu/cpuN/cpufreq/                         |
   +------------------+-----------------------------------------------+
                      |
   +------------------v-----------------------------------------------+
-  |               CPUFreq Core  (drivers/cpufreq/cpufreq.c)         |
-  |                                                                   |
+  |               CPUFreq Core  (drivers/cpufreq/cpufreq.c)          |
+  |                                                                  |
   |  cpufreq_policy_list  <-->  [policy0] <--> [policy1] <--> ...    |
-  |                                |                                  |
+  |                                |                                 |
   |  cpufreq_governor_list <-->  [governor]                          |
-  |                                |                                  |
+  |                                |                                 |
   +------------------+-----------------------------------------------+
                      |
   +------------------v-----------------------------------------------+
   |            CPUFreq Driver  (platform-specific)                   |
-  |                                                                   |
+  |                                                                  |
   |  intel_pstate / intel_cpufreq / acpi-cpufreq / amd-pstate / ...  |
-  |                                                                   |
+  |                                                                  |
   |  .init()  .verify()  .target_index()  .fast_switch()             |
   |  .setpolicy()  .adjust_perf()  .get()                            |
   +------------------------------------------------------------------+
@@ -835,13 +835,13 @@ available states, and a **governor** picks which one to enter each time.
 
 ```
   +------------------------------------------------------------------+
-  |                    Scheduler Idle Loop                            |
+  |                    Scheduler Idle Loop                           |
   |              (kernel/sched/idle.c: do_idle)                      |
   +------------------+-----------------------------------------------+
                      |
   +------------------v-----------------------------------------------+
   |               CPUIdle Core  (drivers/cpuidle/cpuidle.c)          |
-  |                                                                   |
+  |                                                                  |
   |  cpuidle_select()   --> governor->select()                       |
   |  cpuidle_enter()    --> cpuidle_enter_state()                    |
   |  cpuidle_reflect()  --> governor->reflect()                      |
@@ -849,19 +849,19 @@ available states, and a **governor** picks which one to enter each time.
                      |
   +------------------v-----------------------------------------------+
   |            CPUIdle Governor                                      |
-  |                                                                   |
-  |  menu  (rating=20)  |  teo  (rating=19)  |  ladder | haltpoll   |
+  |                                                                  |
+  |  menu  (rating=20)  |  teo  (rating=19)  |  ladder | haltpoll    |
   +------------------+-----------------------------------------------+
                      |
   +------------------v-----------------------------------------------+
   |            CPUIdle Driver  (platform-specific)                   |
-  |                                                                   |
+  |                                                                  |
   |  acpi_idle / intel_idle / psci / ...                             |
-  |  states[0..N]: enter(), exit_latency_ns, target_residency_ns    |
+  |  states[0..N]: enter(), exit_latency_ns, target_residency_ns     |
   +------------------------------------------------------------------+
                      |
   +------------------v-----------------------------------------------+
-  |               Hardware (MWAIT, WFI, HLT, PSCI)                  |
+  |               Hardware (MWAIT, WFI, HLT, PSCI)                   |
   +------------------------------------------------------------------+
 ```
 

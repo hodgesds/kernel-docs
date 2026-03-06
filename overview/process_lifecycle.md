@@ -325,7 +325,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 │                                                             │
 │  Before fork:                                               │
 │  ┌──────────┐     ┌──────────────────────────┐              │
-│  │  Parent  │───▶│     Physical Pages       │              │
+│  │  Parent  │────▶│     Physical Pages       │              │
 │  │   mm     │     │  [Page 1][Page 2][...]   │              │
 │  └──────────┘     └──────────────────────────┘              │
 │                                                             │
@@ -333,19 +333,19 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 │  ┌──────────┐                                               │
 │  │  Parent  │──┐                                            │
 │  │   mm     │  │  ┌──────────────────────────┐              │
-│  └──────────┘  └▶│     Physical Pages       │              │
-│  ┌──────────┐  ┌▶│  [Page 1][Page 2][...]   │              │
+│  └──────────┘  └─▶│     Physical Pages       │              │
+│  ┌──────────┐  ┌─▶│  [Page 1][Page 2][...]   │              │
 │  │  Child   │──┘  │    (marked read-only)    │              │
 │  │   mm     │     └──────────────────────────┘              │
 │  └──────────┘                                               │
 │                                                             │
 │  After child writes to Page 2:                              │
 │  ┌──────────┐     ┌──────────────────────────┐              │
-│  │  Parent  │───▶│  [Page 1]     [Page 2]   │              │
+│  │  Parent  │────▶│  [Page 1]     [Page 2]   │              │
 │  │   mm     │     └──────────────────────────┘              │
 │  └──────────┘                                               │
 │  ┌──────────┐     ┌──────────────────────────┐              │
-│  │  Child   │───▶│  [Page 1]     [Page 2']  │ ← New copy   │
+│  │  Child   │────▶│  [Page 1]     [Page 2']  │ ← New copy   │
 │  │   mm     │     └──────────────────────────┘              │
 │  └──────────┘                                               │
 │                                                             │
@@ -2069,7 +2069,8 @@ read_unlock(&binfmt_lock)
 
 ### `begin_new_exec()` — Point of No Return (`fs/exec.c:1216–1396`)
 
-Where `bprm->point_of_no_return = true` is set (line 1237). After this, errors cannot be returned to the calling userspace process:
+Where `bprm->point_of_no_return = true` is set (line 1237). After this, errors
+cannot be returned to the calling userspace process:
 
 ```
 bprm_creds_from_file(bprm)            ← compute suid/sgid from inode mode
@@ -2110,7 +2111,9 @@ mmap_read_unlock(old_mm)
 mmput(old_mm)                                   ← drop reference to old mm
 ```
 
-The `exec_update_lock` (`signal->exec_update_lock`, a `rw_semaphore`) is held write-locked across the mm swap so ptrace and credential readers see a consistent view.
+The `exec_update_lock` (`signal->exec_update_lock`, a `rw_semaphore`) is held
+write-locked across the mm swap so ptrace and credential readers see a
+consistent view.
 
 ### `struct linux_binprm` Key Fields (`include/linux/binfmts.h:18–65`)
 
@@ -2205,7 +2208,9 @@ struct sigpending {
 };
 ```
 
-Each `task_struct` has `task->pending` (thread-private) and the shared `task->signal->shared_pending`. The `sigset_t` bitmap is the fast-path "any pending?" check; the linked `list` holds full `siginfo` payloads.
+Each `task_struct` has `task->pending` (thread-private) and the shared
+`task->signal->shared_pending`. The `sigset_t` bitmap is the fast-path "any
+pending?" check; the linked `list` holds full `siginfo` payloads.
 
 ### `struct sighand_struct` (`include/linux/sched/signal.h:21–26`)
 
@@ -2445,7 +2450,8 @@ put_pid(thread_pid)               ← free struct pid when refcount hits 0
 put_task_struct_rcu_user(p)       ← dec rcu_users; call_rcu(delayed_put_task_struct)
 ```
 
-`delayed_put_task_struct()` runs in RCU callback context: calls `put_task_struct()` → `__put_task_struct()` → `security_task_free()`, `exit_creds()`, `free_task()`.
+`delayed_put_task_struct()` runs in RCU callback context:
+calls `put_task_struct()` → `__put_task_struct()` → `security_task_free()`, `exit_creds()`, `free_task()`.
 
 ### `do_task_dead()` (`kernel/sched/core.c:6772–6786`)
 
@@ -2459,7 +2465,9 @@ void __noreturn do_task_dead(void)
 }
 ```
 
-The task is removed from the run queue in `__schedule()`. `finish_task_switch()` calls `put_task_struct()` on the dead task, dropping the scheduler's reference.
+The task is removed from the run queue in `__schedule()`.
+`finish_task_switch()` calls `put_task_struct()` on the dead task, dropping the
+scheduler's reference.
 
 ### Thread Group Exit: `zap_other_threads()` (`kernel/signal.c:1336–1355`)
 

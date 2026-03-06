@@ -108,7 +108,7 @@ enum module_state {
   │         ▼                                                │
   │  ┌──────────────┐                                        │
   │  │   COMING     │  Visible to kallsyms, notifiers run;   │
-  │  │              │  module_init() is called                │
+  │  │              │  module_init() is called               │
   │  └──────┬───────┘                                        │
   │         │                                                │
   │         │ do_init_module() success                       │
@@ -642,11 +642,11 @@ temporary vmalloc'd image to its permanent home.
   │                           │ __kcrctab               │   │
   │                           └─────────────────────────┘   │
   │                                                         │
-  │  mod->mem[MOD_DATA]       ┌─────────────────────────┐   │
-  │     .base ───────────────▶│ .data (RW-)             │   │
-  │                           │ .gnu.linkonce.this_module│   │
-  │                           │ core_kallsyms (symtab)  │   │
-  │                           └─────────────────────────┘   │
+  │  mod->mem[MOD_DATA]       ┌──────────────────────────┐  │
+  │     .base ───────────────▶│ .data (RW-)              │  │
+  │                           │ .gnu.linkonce.this_module│  │
+  │                           │ core_kallsyms (symtab)   │  │
+  │                           └──────────────────────────┘  │
   │                                                         │
   │  mod->mem[MOD_INIT_TEXT]  ┌─────────────────────────┐   │
   │     .base ───────────────▶│ .init.text (R-X)        │   │
@@ -848,7 +848,7 @@ The module file layout with a signature appended:
   │  │ Signer's name (optional, currently 0 len)   ││
   │  │ Key identifier (optional, currently 0 len)  ││
   │  │ PKCS#7 signature data (sig_len bytes)       ││
-  │  │ struct module_signature (12 bytes)           ││
+  │  │ struct module_signature (12 bytes)          ││
   │  └─────────────────────────────────────────────┘│
   │  MODULE_SIG_STRING marker:                      │
   │  "~Module signature appended~\n"                │
@@ -1262,15 +1262,15 @@ unsupported or problematic code. Taints are stored as a bitmask in
 `module_augment_kernel_taints()` (kernel/module/main.c:2337) applies taints
 based on module properties:
 
-| Taint Flag               | Condition                                    |
-|--------------------------|----------------------------------------------|
-| `TAINT_OOT_MODULE`       | No `intree` tag in `.modinfo`                |
-| `TAINT_PROPRIETARY_MODULE` | Non-GPL `license` in `.modinfo`            |
-| `TAINT_CRAP`             | `staging` tag in `.modinfo`                  |
-| `TAINT_LIVEPATCH`        | `livepatch` tag in `.modinfo`                |
-| `TAINT_UNSIGNED_MODULE`  | Signature verification failed                |
-| `TAINT_TEST`             | `test` tag in `.modinfo`                     |
-| `TAINT_FORCED_MODULE`    | Loaded with `--force` (bad vermagic/version) |
+| Taint Flag                | Condition                                    |
+|---------------------------|----------------------------------------------|
+| `TAINT_OOT_MODULE`        | No `intree` tag in `.modinfo`                |
+| `TAINT_PROPRIETARY_MODULE`| Non-GPL `license` in `.modinfo`              |
+| `TAINT_CRAP`              | `staging` tag in `.modinfo`                  |
+| `TAINT_LIVEPATCH`         | `livepatch` tag in `.modinfo`                |
+| `TAINT_UNSIGNED_MODULE`   | Signature verification failed                |
+| `TAINT_TEST`              | `test` tag in `.modinfo`                     |
+| `TAINT_FORCED_MODULE`     | Loaded with `--force` (bad vermagic/version) |
 
 ### GPL Symbol Enforcement
 
@@ -1470,14 +1470,14 @@ completion.
 The Linux kernel module subsystem provides a complete infrastructure for
 dynamically extending the kernel with loadable code.
 
-| Component              | Purpose                                        |
-|------------------------|------------------------------------------------|
+| Component              | Purpose                                         |
+|------------------------|-------------------------------------------------|
 | System calls           | `init_module`, `finit_module`, `delete_module`  |
 | ELF processing         | Parse, validate, layout, relocate `.ko` files   |
 | Symbol resolution      | Link undefined symbols to kernel/module exports |
-| Dependency tracking    | `module_use` lists, refcount management          |
+| Dependency tracking    | `module_use` lists, refcount management         |
 | Signature verification | PKCS#7 cryptographic module authentication      |
-| Module parameters      | Runtime-configurable values via sysfs            |
+| Module parameters      | Runtime-configurable values via sysfs           |
 | Memory management      | 7-region layout with per-region R/W/X perms     |
 | Sysfs/Procfs           | `/sys/module/`, `/proc/modules` interfaces      |
 | Kallsyms               | Address-to-symbol and symbol-to-address lookups |

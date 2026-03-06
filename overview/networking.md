@@ -1018,7 +1018,7 @@ enum {
 │           │ send SYN,ACK                  │ send ACK        │
 │           ▼                               ▼                 │
 │      ┌───────────┐                  ┌─────────────┐         │
-│      │ SYN_RECV  │────────────────▶│ ESTABLISHED │         │
+│      │ SYN_RECV  │─────────────────▶│ ESTABLISHED │         │
 │      └───────────┘ rcv ACK          └──────┬──────┘         │
 │                                            │                │
 │           ┌──────────────┬─────────────────┤                │
@@ -1437,7 +1437,8 @@ int xdp_filter(struct xdp_md *ctx)
 
 ## Traffic Control (tc)
 
-The traffic control subsystem manages packet scheduling, shaping, and classification.
+The traffic control subsystem manages packet scheduling, shaping, and
+classification.
 
 ### Qdisc Architecture
 
@@ -1575,7 +1576,8 @@ int tc_filter(struct __sk_buff *skb)
 
 ### GRO (Generic Receive Offload)
 
-`napi_gro_receive()` is the primary driver entry point for GRO, defined in `net/core/gro.c:626`.
+`napi_gro_receive()` is the primary driver entry point for GRO, defined in
+`net/core/gro.c:626`.
 
 **Call flow:**
 1. `napi_gro_receive(napi, skb)` — marks the NAPI ID, resets the GRO offset via `skb_gro_reset_offset()`
@@ -1698,9 +1700,12 @@ struct fib_table {
 
 ### `fib_lookup()` (`include/net/ip_fib.h:314`)
 
-Without `CONFIG_IP_MULTIPLE_TABLES`: looks up directly in main and local tables via `fib_table_lookup()`.
+Without `CONFIG_IP_MULTIPLE_TABLES`: looks up directly in main and local tables
+via `fib_table_lookup()`.
 
-With `CONFIG_IP_MULTIPLE_TABLES`: if `net->ipv4.fib_has_custom_rules` is set, calls `__fib_lookup()` → `fib_rules_lookup()` to evaluate policy routing rules; each matching rule points to a table searched via `fib_table_lookup()`.
+With `CONFIG_IP_MULTIPLE_TABLES`: if `net->ipv4.fib_has_custom_rules` is set,
+calls `__fib_lookup()` → `fib_rules_lookup()` to evaluate policy routing rules;
+each matching rule points to a table searched via `fib_table_lookup()`.
 
 ### LC-Trie (`struct key_vector`) (`net/ipv4/fib_trie.c:121`)
 

@@ -60,45 +60,45 @@ virt/kvm/kvm_main.c:73-75
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         User Space                                   │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │   VMM (QEMU / crosvm / Firecracker / Cloud Hypervisor)        │  │
+│  │   VMM (QEMU / crosvm / Firecracker / Cloud Hypervisor)         │  │
 │  │                                                                │  │
-│  │   ┌──────────┐  ┌──────────┐  ┌─────────────────────────┐    │  │
-│  │   │  VM mgmt │  │  Device  │  │ vCPU threads            │    │  │
-│  │   │  ioctls  │  │  emulat. │  │ (KVM_RUN loop)          │    │  │
-│  │   └────┬─────┘  └────┬─────┘  └────────┬────────────────┘    │  │
-│  └────────┼──────────────┼─────────────────┼─────────────────────┘  │
+│  │   ┌──────────┐   ┌──────────┐  ┌─────────────────────────┐     │  │
+│  │   │  VM mgmt │   │  Device  │  │ vCPU threads            │     │  │
+│  │   │  ioctls  │   │  emulat. │  │ (KVM_RUN loop)          │     │  │
+│  │   └────┬─────┘   └────┬─────┘  └────────┬────────────────┘     │  │
+│  └────────┼──────────────┼─────────────────┼──────────────────────┘  │
 │           │              │                 │                         │
-│ ──────────┼──────────────┼─────────────────┼───── /dev/kvm ─────── │
-│           │   ioctl()    │   ioctl()       │   ioctl(KVM_RUN)      │
-├───────────┼──────────────┼─────────────────┼────────────────────────┤
-│           ▼              ▼                 ▼     Kernel Space       │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    KVM Core (kvm.ko)                         │   │
-│  │                   virt/kvm/kvm_main.c                        │   │
-│  │                                                              │   │
-│  │   ┌──────────┐  ┌──────────┐  ┌───────────────────────┐    │   │
-│  │   │  VM mgmt │  │  Memory  │  │   vCPU scheduling     │    │   │
-│  │   │  (struct │  │  slots & │  │   & VM entry/exit     │    │   │
-│  │   │   kvm)   │  │  MMU     │  │                       │    │   │
-│  │   └──────────┘  └──────────┘  └───────────────────────┘    │   │
-│  └──────────────────────┬───────────────────────────────────────┘   │
-│                         │                                           │
-│  ┌──────────────────────▼───────────────────────────────────────┐   │
-│  │        Hardware Backend (kvm-intel.ko / kvm-amd.ko)          │   │
-│  │        arch/x86/kvm/vmx/  or  arch/x86/kvm/svm/             │   │
-│  │                                                              │   │
-│  │   ┌──────────┐  ┌──────────┐  ┌───────────────────────┐    │   │
-│  │   │  VMCS /  │  │  VM exit │  │  Hardware-specific    │    │   │
-│  │   │  VMCB    │  │  handler │  │  feature enablement   │    │   │
-│  │   │  mgmt    │  │          │  │  (EPT, VPID, etc.)    │    │   │
-│  │   └──────────┘  └──────────┘  └───────────────────────┘    │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    Hardware (CPU)                             │   │
-│  │       VT-x (VMXON/VMLAUNCH/VMRESUME) or AMD-V (VMRUN)       │   │
-│  │       EPT / NPT page tables in hardware                      │   │
-│  └──────────────────────────────────────────────────────────────┘   │
+│ ──────────┼──────────────┼─────────────────┼───── /dev/kvm ───────   │
+│           │   ioctl()    │   ioctl()       │   ioctl(KVM_RUN)        │
+├───────────┼──────────────┼─────────────────┼─────────────────────────┤
+│           ▼              ▼                 ▼     Kernel Space        │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                    KVM Core (kvm.ko)                         │    │
+│  │                   virt/kvm/kvm_main.c                        │    │
+│  │                                                              │    │
+│  │   ┌──────────┐  ┌──────────┐  ┌───────────────────────┐      │    │
+│  │   │  VM mgmt │  │  Memory  │  │   vCPU scheduling     │      │    │
+│  │   │  (struct │  │  slots & │  │   & VM entry/exit     │      │    │
+│  │   │   kvm)   │  │  MMU     │  │                       │      │    │
+│  │   └──────────┘  └──────────┘  └───────────────────────┘      │    │
+│  └──────────────────────┬───────────────────────────────────────┘    │
+│                         │                                            │
+│  ┌──────────────────────▼───────────────────────────────────────┐    │
+│  │        Hardware Backend (kvm-intel.ko / kvm-amd.ko)          │    │
+│  │        arch/x86/kvm/vmx/  or  arch/x86/kvm/svm/              │    │
+│  │                                                              │    │
+│  │   ┌──────────┐  ┌──────────┐  ┌───────────────────────┐      │    │
+│  │   │  VMCS /  │  │  VM exit │  │  Hardware-specific    │      │    │
+│  │   │  VMCB    │  │  handler │  │  feature enablement   │      │    │
+│  │   │  mgmt    │  │          │  │  (EPT, VPID, etc.)    │      │    │
+│  │   └──────────┘  └──────────┘  └───────────────────────┘      │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                    Hardware (CPU)                            │    │
+│  │       VT-x (VMXON/VMLAUNCH/VMRESUME) or AMD-V (VMRUN)        │    │
+│  │       EPT / NPT page tables in hardware                      │    │
+│  └──────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -122,7 +122,7 @@ KVM uses three levels of file descriptors, each with its own set of ioctls:
 
 ```
                   ┌──────────────────────┐
-   open("/dev/kvm") → │  System fd (/dev/kvm)│
+open("/dev/kvm")→ │  System fd (/dev/kvm)│
                   └──────────┬───────────┘
                              │ KVM_CREATE_VM
                              ▼
@@ -140,10 +140,10 @@ KVM uses three levels of file descriptors, each with its own set of ioctls:
 
 | Ioctl                        | Purpose                                       |
 |------------------------------|-----------------------------------------------|
-| `KVM_GET_API_VERSION`        | Returns `KVM_API_VERSION` (currently 12)       |
-| `KVM_CREATE_VM`              | Creates a new VM, returns a VM fd              |
-| `KVM_CHECK_EXTENSION`        | Query capability support                       |
-| `KVM_GET_VCPU_MMAP_SIZE`     | Size of `kvm_run` mmap region                  |
+| `KVM_GET_API_VERSION`        | Returns `KVM_API_VERSION` (currently 12)      |
+| `KVM_CREATE_VM`              | Creates a new VM, returns a VM fd             |
+| `KVM_CHECK_EXTENSION`        | Query capability support                      |
+| `KVM_GET_VCPU_MMAP_SIZE`     | Size of `kvm_run` mmap region                 |
 
 ```
 include/uapi/linux/kvm.h:17
@@ -157,14 +157,14 @@ include/uapi/linux/kvm.h:17
 | `KVM_CREATE_VCPU`              | Create a vCPU, returns a vCPU fd              |
 | `KVM_SET_USER_MEMORY_REGION`   | Map host memory into guest physical space     |
 | `KVM_SET_USER_MEMORY_REGION2`  | Extended version with guest_memfd support     |
-| `KVM_CREATE_IRQCHIP`          | Create in-kernel PIC/IOAPIC/LAPIC             |
-| `KVM_SET_GSI_ROUTING`         | Configure IRQ routing table                   |
-| `KVM_IRQFD`                   | Bind eventfd to guest IRQ line                |
-| `KVM_IOEVENTFD`               | Bind eventfd to guest I/O address             |
-| `KVM_SET_TSS_ADDR`            | Set Task State Segment address (x86)          |
-| `KVM_SET_IDENTITY_MAP_ADDR`   | Set identity map page (x86)                   |
-| `KVM_CREATE_PIT2`             | Create in-kernel i8254 PIT                    |
-| `KVM_GET_DIRTY_LOG`           | Retrieve dirty page bitmap for live migration |
+| `KVM_CREATE_IRQCHIP`          | Create in-kernel PIC/IOAPIC/LAPIC              |
+| `KVM_SET_GSI_ROUTING`         | Configure IRQ routing table                    |
+| `KVM_IRQFD`                   | Bind eventfd to guest IRQ line                 |
+| `KVM_IOEVENTFD`               | Bind eventfd to guest I/O address              |
+| `KVM_SET_TSS_ADDR`            | Set Task State Segment address (x86)           |
+| `KVM_SET_IDENTITY_MAP_ADDR`   | Set identity map page (x86)                    |
+| `KVM_CREATE_PIT2`             | Create in-kernel i8254 PIT                     |
+| `KVM_GET_DIRTY_LOG`           | Retrieve dirty page bitmap for live migration  |
 
 ### 3.3 vCPU-level ioctls
 
@@ -482,7 +482,7 @@ while (1) {
                                         ├─ vcpu_load()
                                         │    └─ kvm_arch_vcpu_load()
                                         │
-                                        ├─ ┌── vcpu_run() loop ──────────────┐
+                                        ├─ ┌── vcpu_run() loop ───────────────┐
                                         │  │ for (;;) {                       │
                                         │  │   if (kvm_vcpu_running())        │
                                         │  │     r = vcpu_enter_guest()       │
@@ -552,58 +552,58 @@ managed by the CPU via `VMREAD`/`VMWRITE` instructions.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     VMCS Layout                          │
+│                     VMCS Layout                         │
 ├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  Guest-State Area                                        │
-│  ──────────────────                                      │
-│  - CR0, CR3, CR4                                         │
+│                                                         │
+│  Guest-State Area                                       │
+│  ──────────────────                                     │
+│  - CR0, CR3, CR4                                        │
 │  - RSP, RIP, RFLAGS                                     │
 │  - Segment registers (CS, DS, SS, ES, FS, GS, LDTR, TR) │
 │  - GDTR, IDTR                                           │
 │  - MSRs (IA32_EFER, IA32_PAT, etc.)                     │
-│  - Activity state (active, HLT, shutdown, wait-for-SIPI) │
-│  - Interruptibility state                                │
-│  - Pending debug exceptions                              │
-│                                                          │
-│  Host-State Area                                         │
-│  ────────────────                                        │
-│  - CR0, CR3, CR4                                         │
-│  - RSP, RIP (entry point after VM exit)                  │
-│  - Segment selectors                                     │
-│  - MSRs                                                  │
-│                                                          │
-│  VM-Execution Controls                                   │
-│  ──────────────────────                                  │
-│  - Pin-based (ext. interrupts, NMI, preemption timer)    │
+│  - Activity state (active, HLT, shutdown, wait-for-SIPI)│
+│  - Interruptibility state                               │
+│  - Pending debug exceptions                             │
+│                                                         │
+│  Host-State Area                                        │
+│  ────────────────                                       │
+│  - CR0, CR3, CR4                                        │
+│  - RSP, RIP (entry point after VM exit)                 │
+│  - Segment selectors                                    │
+│  - MSRs                                                 │
+│                                                         │
+│  VM-Execution Controls                                  │
+│  ──────────────────────                                 │
+│  - Pin-based (ext. interrupts, NMI, preemption timer)   │
 │  - Primary processor-based (HLT, MWAIT, RDPMC, etc.)    │
 │  - Secondary processor-based (EPT, VPID, RDTSCP, etc.)  │
-│  - Exception bitmap (which exceptions cause VM exit)     │
-│  - I/O bitmap addresses                                  │
-│  - MSR bitmaps address                                   │
-│  - EPT pointer (EPTP)                                    │
-│  - Virtual APIC page address                             │
-│                                                          │
-│  VM-Exit Controls                                        │
-│  ────────────────                                        │
-│  - Acknowledge interrupt on exit                         │
-│  - Save/load MSRs on exit                                │
-│  - Host address-space size                               │
-│                                                          │
-│  VM-Entry Controls                                       │
-│  ─────────────────                                       │
-│  - Event injection (interrupt/exception/NMI)             │
-│  - Load MSRs on entry                                    │
-│  - Guest mode (IA-32e / protected / real)                │
-│                                                          │
-│  VM-Exit Information (read-only)                         │
-│  ───────────────────────────────                         │
-│  - Exit reason                                           │
-│  - Exit qualification (details about exit cause)         │
-│  - Guest-linear and guest-physical addresses             │
-│  - Instruction length, instruction info                  │
-│  - IDT/GDT vectoring information                         │
-│                                                          │
+│  - Exception bitmap (which exceptions cause VM exit)    │
+│  - I/O bitmap addresses                                 │
+│  - MSR bitmaps address                                  │
+│  - EPT pointer (EPTP)                                   │
+│  - Virtual APIC page address                            │
+│                                                         │
+│  VM-Exit Controls                                       │
+│  ────────────────                                       │
+│  - Acknowledge interrupt on exit                        │
+│  - Save/load MSRs on exit                               │
+│  - Host address-space size                              │
+│                                                         │
+│  VM-Entry Controls                                      │
+│  ─────────────────                                      │
+│  - Event injection (interrupt/exception/NMI)            │
+│  - Load MSRs on entry                                   │
+│  - Guest mode (IA-32e / protected / real)               │
+│                                                         │
+│  VM-Exit Information (read-only)                        │
+│  ───────────────────────────────                        │
+│  - Exit reason                                          │
+│  - Exit qualification (details about exit cause)        │
+│  - Guest-linear and guest-physical addresses            │
+│  - Instruction length, instruction info                 │
+│  - IDT/GDT vectoring information                        │
+│                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -633,22 +633,22 @@ userspace.
 ### 7.1 Common VM Exit Reasons
 
 | Exit Reason                    | Typical Handling                              |
-|-------------------------------|-----------------------------------------------|
-| External interrupt             | Return to host interrupt handler               |
-| HLT                           | `kvm_emulate_halt()` — block or halt-poll      |
-| I/O (IN/OUT)                  | In-kernel device or exit to userspace           |
-| MMIO                          | In-kernel device or exit to userspace           |
-| EPT violation / NPT fault     | KVM MMU handles page fault                     |
-| CR access                     | Emulate CR read/write                           |
-| MSR access                    | Handle in-kernel or filter via MSR bitmap       |
-| CPUID                         | `kvm_emulate_cpuid()`                           |
-| WRMSR/RDMSR                   | MSR emulation                                  |
-| Exception (e.g., #PF, #GP)    | Inject into guest or handle internally          |
-| Preemption timer               | Preempt guest for scheduler fairness            |
-| PAUSE                         | Pause-loop exiting — yield to other vCPUs       |
-| XSETBV                        | Emulate XCR0 write                              |
-| INVLPG                        | Invalidate shadow/EPT TLB entry                 |
-| Task switch                   | Emulate hardware task switch                    |
+|--------------------------------|-----------------------------------------------|
+| External interrupt             | Return to host interrupt handler              |
+| HLT                            | `kvm_emulate_halt()` — block or halt-poll     |
+| I/O (IN/OUT)                   | In-kernel device or exit to userspace         |
+| MMIO                           | In-kernel device or exit to userspace         |
+| EPT violation / NPT fault      | KVM MMU handles page fault                    |
+| CR access                      | Emulate CR read/write                         |
+| MSR access                     | Handle in-kernel or filter via MSR bitmap     |
+| CPUID                          | `kvm_emulate_cpuid()`                         |
+| WRMSR/RDMSR                    | MSR emulation                                 |
+| Exception (e.g., #PF, #GP)     | Inject into guest or handle internally        |
+| Preemption timer               | Preempt guest for scheduler fairness          |
+| PAUSE                          | Pause-loop exiting — yield to other vCPUs     |
+| XSETBV                         | Emulate XCR0 write                            |
+| INVLPG                         | Invalidate shadow/EPT TLB entry               |
+| Task switch                    | Emulate hardware task switch                  |
 
 ### 7.2 Exit Reason Codes (Userspace-visible)
 
@@ -718,29 +718,29 @@ in hardware, eliminating the need for shadow page tables.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                Two-Level Address Translation                     │
+│                Two-Level Address Translation                    │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Guest Virtual Addr (GVA)                                        │
-│         │                                                        │
-│         │  Guest Page Tables (CR3)                                │
-│         │  (controlled by guest OS)                               │
-│         ▼                                                        │
-│  Guest Physical Addr (GPA)                                       │
-│         │                                                        │
-│         │  EPT / NPT Page Tables (EPTP)                          │
-│         │  (controlled by KVM)                                    │
-│         ▼                                                        │
-│  Host Physical Addr (HPA)                                        │
-│                                                                  │
+│                                                                 │
+│  Guest Virtual Addr (GVA)                                       │
+│         │                                                       │
+│         │  Guest Page Tables (CR3)                              │
+│         │  (controlled by guest OS)                             │
+│         ▼                                                       │
+│  Guest Physical Addr (GPA)                                      │
+│         │                                                       │
+│         │  EPT / NPT Page Tables (EPTP)                         │
+│         │  (controlled by KVM)                                  │
+│         ▼                                                       │
+│  Host Physical Addr (HPA)                                       │
+│                                                                 │
 │  Without EPT/NPT (Shadow Page Tables):                          │
-│  ──────────────────────────────────────                          │
+│  ──────────────────────────────────────                         │
 │  GVA ──► GPA (guest PT) ──► HPA  →  collapsed into              │
-│  GVA ──────────────────────► HPA     shadow page table           │
-│                                                                  │
-│  Shadow PTs require VM exits on every guest PT modification.     │
-│  EPT/NPT remove this overhead entirely.                          │
-│                                                                  │
+│  GVA ──────────────────────► HPA     shadow page table          │
+│                                                                 │
+│  Shadow PTs require VM exits on every guest PT modification.    │
+│  EPT/NPT remove this overhead entirely.                         │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -773,25 +773,25 @@ Each EPT PTE contains:
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │  Userspace (QEMU)                                              │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  mmap'd anonymous memory:                              │   │
-│  │                                                        │   │
-│  │  slot 0: RAM         0x0000_0000 - 0x0009_FFFF (640K)  │   │
-│  │  slot 1: RAM         0x0010_0000 - 0x7FFF_FFFF (2G-1M) │   │
-│  │  slot 2: VGA FB      0x000A_0000 - 0x000B_FFFF         │   │
-│  │  slot 3: ROM (RO)    0xFFFC_0000 - 0xFFFF_FFFF (BIOS)  │   │
-│  └────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────┐    │
+│  │  mmap'd anonymous memory:                              │    │
+│  │                                                        │    │
+│  │  slot 0: RAM         0x0000_0000 - 0x0009_FFFF (640K)  │    │
+│  │  slot 1: RAM         0x0010_0000 - 0x7FFF_FFFF (2G-1M) │    │
+│  │  slot 2: VGA FB      0x000A_0000 - 0x000B_FFFF         │    │
+│  │  slot 3: ROM (RO)    0xFFFC_0000 - 0xFFFF_FFFF (BIOS)  │    │
+│  └────────────────────────────────────────────────────────┘    │
 │        │                                                       │
 │        │  KVM_SET_USER_MEMORY_REGION                           │
 │        ▼                                                       │
 │  Kernel (KVM)                                                  │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  struct kvm_memory_slot[]                               │   │
-│  │    base_gfn ──► npages ──► userspace_addr               │   │
-│  │                                                         │   │
-│  │  EPT/NPT page tables                                   │   │
-│  │    GPA → HPA mappings (populated on demand / faults)    │   │
-│  └────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────┐    │
+│  │  struct kvm_memory_slot[]                              │    │
+│  │    base_gfn ──► npages ──► userspace_addr              │    │
+│  │                                                        │    │
+│  │  EPT/NPT page tables                                   │    │
+│  │    GPA → HPA mappings (populated on demand / faults)   │    │
+│  └────────────────────────────────────────────────────────┘    │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -854,23 +854,23 @@ forcing re-faults that will pick up the new mapping.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                Interrupt Delivery Path                           │
+│                Interrupt Delivery Path                          │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Userspace (QEMU)                                                │
-│  ┌────────┐    KVM_IRQFD        ┌──────────┐                   │
-│  │ Device  │ ─────eventfd──────►│ irqfd in │                   │
-│  │ Model   │                    │ KVM core │                   │
-│  └────────┘                     └────┬─────┘                   │
+│                                                                 │
+│  Userspace (QEMU)                                               │
+│  ┌────────┐    KVM_IRQFD        ┌──────────┐                    │
+│  │ Device │ ─────eventfd───────►│ irqfd in │                    │
+│  │ Model  │                     │ KVM core │                    │
+│  └────────┘                     └────┬─────┘                    │
 │                                      │                          │
-│  ──────────────────────────────────── │ ────────────────────── │
+│  ─────────────────────────────────── │ ──────────────────────   │
 │                                      ▼        Kernel            │
 │                               ┌──────────────┐                  │
-│  ┌─────────┐    ┌──────────┐ │   KVM IRQ    │                  │
+│  ┌──────────┐    ┌──────────┐ │   KVM IRQ    │                  │
 │  │ In-kernel│───►│  IOAPIC  │─┤   Routing    │                  │
 │  │ devices  │    │          │ │   Table      │                  │
 │  │ (PIT,etc)│    └──────────┘ └──────┬───────┘                  │
-│  └─────────┘                         │                          │
+│  └──────────┘                        │                          │
 │                                      ▼                          │
 │                               ┌──────────────┐                  │
 │                               │   LAPIC      │                  │
@@ -884,7 +884,7 @@ forcing re-faults that will pick up the new mapping.
 │                               │ VMCB entry field │              │
 │                               │ on next VM entry │              │
 │                               └──────────────────┘              │
-│                                                                  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -978,7 +978,7 @@ them in batch, reducing VM exit overhead.
 KVM can emulate several devices entirely in-kernel for performance:
 
 | Device      | Purpose                           | Created via              |
-|------------|-----------------------------------|--------------------------|
+|-------------|-----------------------------------|--------------------------|
 | Local APIC  | Per-CPU interrupt controller      | `KVM_CREATE_IRQCHIP`     |
 | IOAPIC      | I/O interrupt routing             | `KVM_CREATE_IRQCHIP`     |
 | PIC (i8259) | Legacy interrupt controller       | `KVM_CREATE_IRQCHIP`     |
@@ -1064,22 +1064,22 @@ arch/x86/kvm/svm/sev.c        — AMD SEV (Secure Encrypted Virtualization)
 The x86 architecture code provides a function table that abstracts the
 hardware differences. Key callbacks include:
 
-| Callback                   | Purpose                                    |
-|---------------------------|--------------------------------------------|
-| `vcpu_create`             | Allocate and initialize hardware vCPU state |
-| `vcpu_free`               | Free hardware vCPU state                    |
-| `vcpu_load`               | Load vCPU state onto physical CPU           |
-| `vcpu_put`                | Unload vCPU state from physical CPU         |
-| `vcpu_run`                | Enter guest mode (VMLAUNCH/VMRESUME/VMRUN) |
-| `handle_exit`             | Process VM exit reason                      |
-| `set_cr0` / `set_cr3` / `set_cr4` | CR register write emulation         |
-| `get_cpl`                 | Get current privilege level                 |
-| `inject_irq`              | Inject interrupt into guest                 |
-| `inject_nmi`              | Inject NMI into guest                       |
-| `queue_exception`         | Queue exception for injection               |
-| `set_msr` / `get_msr`    | MSR emulation                               |
-| `tlb_flush_all`           | Flush all TLB entries                       |
-| `tlb_flush_current`       | Flush current ASID/VPID TLB entries         |
+| Callback                          | Purpose                                     |
+|-----------------------------------|---------------------------------------------|
+| `vcpu_create`                     | Allocate and initialize hardware vCPU state |
+| `vcpu_free`                       | Free hardware vCPU state                    |
+| `vcpu_load`                       | Load vCPU state onto physical CPU           |
+| `vcpu_put`                        | Unload vCPU state from physical CPU         |
+| `vcpu_run`                        | Enter guest mode (VMLAUNCH/VMRESUME/VMRUN)  |
+| `handle_exit`                     | Process VM exit reason                      |
+| `set_cr0` / `set_cr3` / `set_cr4` | CR register write emulation                 |
+| `get_cpl`                         | Get current privilege level                 |
+| `inject_irq`                      | Inject interrupt into guest                 |
+| `inject_nmi`                      | Inject NMI into guest                       |
+| `queue_exception`                 | Queue exception for injection               |
+| `set_msr` / `get_msr`             | MSR emulation                               |
+| `tlb_flush_all`                   | Flush all TLB entries                       |
+| `tlb_flush_current`               | Flush current ASID/VPID TLB entries         |
 
 ---
 
@@ -1229,9 +1229,9 @@ arch/x86/kvm/svm/nested.c    — Nested SVM implementation
 
 ### 14.1 Architecture-Independent (Common)
 
-| File                              | Purpose                                     |
-|----------------------------------|---------------------------------------------|
-| `virt/kvm/kvm_main.c`           | Core KVM module: VM/vCPU lifecycle, ioctls  |
+| File                            | Purpose                                      |
+|---------------------------------|----------------------------------------------|
+| `virt/kvm/kvm_main.c`           | Core KVM module: VM/vCPU lifecycle, ioctls   |
 | `virt/kvm/eventfd.c`            | irqfd and ioeventfd implementation           |
 | `virt/kvm/async_pf.c`           | Asynchronous page fault framework            |
 | `virt/kvm/coalesced_mmio.c`     | Coalesced MMIO ring buffer                   |
@@ -1240,32 +1240,32 @@ arch/x86/kvm/svm/nested.c    — Nested SVM implementation
 | `virt/kvm/guest_memfd.c`        | Private memory for confidential VMs          |
 | `include/linux/kvm_host.h`      | Core KVM data structures                     |
 | `include/uapi/linux/kvm.h`      | Userspace API (ioctls, structs)              |
-| `include/linux/kvm_types.h`     | KVM type definitions (gfn_t, gpa_t, etc.)   |
+| `include/linux/kvm_types.h`     | KVM type definitions (gfn_t, gpa_t, etc.)    |
 
 ### 14.2 x86 Architecture-Specific
 
-| File                              | Purpose                                     |
-|----------------------------------|---------------------------------------------|
-| `arch/x86/kvm/x86.c`            | x86 common code (ioctls, emulation, MSRs)  |
+| File                            | Purpose                                     |
+|---------------------------------|---------------------------------------------|
+| `arch/x86/kvm/x86.c`            | x86 common code (ioctls, emulation, MSRs)   |
 | `arch/x86/kvm/mmu/mmu.c`        | MMU — shadow & EPT page table management    |
 | `arch/x86/kvm/mmu/tdp_mmu.c`    | TDP (Two-Dimensional Paging) MMU            |
-| `arch/x86/kvm/mmu/spte.c`       | Shadow PTE manipulation                      |
-| `arch/x86/kvm/mmu/page_track.c` | Page write tracking                          |
-| `arch/x86/kvm/lapic.c`          | In-kernel Local APIC emulation               |
-| `arch/x86/kvm/ioapic.c`         | In-kernel IOAPIC emulation                   |
-| `arch/x86/kvm/i8254.c`          | In-kernel PIT emulation                      |
-| `arch/x86/kvm/irq.c`            | IRQ handling and injection                   |
-| `arch/x86/kvm/cpuid.c`          | CPUID emulation and filtering                |
-| `arch/x86/kvm/emulate.c`        | x86 instruction emulator                     |
-| `arch/x86/kvm/pmu.c`            | Virtual Performance Monitoring Unit          |
-| `arch/x86/kvm/hyperv.c`         | Hyper-V enlightenments emulation             |
-| `arch/x86/kvm/xen.c`            | Xen HVM emulation                            |
-| `arch/x86/kvm/smm.c`            | System Management Mode                       |
+| `arch/x86/kvm/mmu/spte.c`       | Shadow PTE manipulation                     |
+| `arch/x86/kvm/mmu/page_track.c` | Page write tracking                         |
+| `arch/x86/kvm/lapic.c`          | In-kernel Local APIC emulation              |
+| `arch/x86/kvm/ioapic.c`         | In-kernel IOAPIC emulation                  |
+| `arch/x86/kvm/i8254.c`          | In-kernel PIT emulation                     |
+| `arch/x86/kvm/irq.c`            | IRQ handling and injection                  |
+| `arch/x86/kvm/cpuid.c`          | CPUID emulation and filtering               |
+| `arch/x86/kvm/emulate.c`        | x86 instruction emulator                    |
+| `arch/x86/kvm/pmu.c`            | Virtual Performance Monitoring Unit         |
+| `arch/x86/kvm/hyperv.c`         | Hyper-V enlightenments emulation            |
+| `arch/x86/kvm/xen.c`            | Xen HVM emulation                           |
+| `arch/x86/kvm/smm.c`            | System Management Mode                      |
 
 ### 14.3 Intel VMX Backend
 
-| File                                | Purpose                                   |
-|-------------------------------------|-------------------------------------------|
+| File                               | Purpose                                   |
+|------------------------------------|-------------------------------------------|
 | `arch/x86/kvm/vmx/vmx.c`           | VMX core: entry/exit, VMCS management     |
 | `arch/x86/kvm/vmx/vmx.h`           | VMX data structures                       |
 | `arch/x86/kvm/vmx/vmcs.h`          | VMCS field encodings                      |
@@ -1277,8 +1277,8 @@ arch/x86/kvm/svm/nested.c    — Nested SVM implementation
 
 ### 14.4 AMD SVM Backend
 
-| File                              | Purpose                                     |
-|----------------------------------|---------------------------------------------|
+| File                            | Purpose                                     |
+|---------------------------------|---------------------------------------------|
 | `arch/x86/kvm/svm/svm.c`        | SVM core: entry/exit, VMCB management       |
 | `arch/x86/kvm/svm/svm.h`        | SVM data structures, VMCB layout            |
 | `arch/x86/kvm/svm/vmenter.S`    | Assembly VM entry/exit routines             |
@@ -1288,12 +1288,12 @@ arch/x86/kvm/svm/nested.c    — Nested SVM implementation
 
 ### 14.5 Key Functions Reference
 
-| Function                             | File                    | Line  | Purpose                              |
-|--------------------------------------|-------------------------|-------|--------------------------------------|
-| `kvm_dev_ioctl_create_vm()`         | `virt/kvm/kvm_main.c`  | 5340  | Create a new VM                      |
-| `kvm_vm_ioctl_create_vcpu()`        | `virt/kvm/kvm_main.c`  | 4057  | Create a new vCPU                    |
-| `kvm_vcpu_ioctl()`                  | `virt/kvm/kvm_main.c`  | 4285  | vCPU ioctl dispatcher                |
-| `kvm_vm_ioctl()`                    | `virt/kvm/kvm_main.c`  | 5008  | VM ioctl dispatcher                  |
+| Function                           | File                   | Line  | Purpose                              |
+|------------------------------------|------------------------|-------|--------------------------------------|
+| `kvm_dev_ioctl_create_vm()`        | `virt/kvm/kvm_main.c`  | 5340  | Create a new VM                      |
+| `kvm_vm_ioctl_create_vcpu()`       | `virt/kvm/kvm_main.c`  | 4057  | Create a new vCPU                    |
+| `kvm_vcpu_ioctl()`                 | `virt/kvm/kvm_main.c`  | 4285  | vCPU ioctl dispatcher                |
+| `kvm_vm_ioctl()`                   | `virt/kvm/kvm_main.c`  | 5008  | VM ioctl dispatcher                  |
 | `kvm_io_bus_write()`               | `virt/kvm/kvm_main.c`  | —     | Write to in-kernel I/O device        |
 | `kvm_io_bus_read()`                | `virt/kvm/kvm_main.c`  | —     | Read from in-kernel I/O device       |
 | `kvm_arch_vcpu_ioctl_run()`        | `arch/x86/kvm/x86.c`   | —     | x86 KVM_RUN entry point              |

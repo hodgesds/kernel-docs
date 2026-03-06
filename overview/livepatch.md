@@ -64,36 +64,36 @@ all tasks transition safely from old code to new code.
 
 ```
 +------------------------------------------------------------------+
-|                   Livepatch Architecture                          |
+|                   Livepatch Architecture                         |
 +------------------------------------------------------------------+
-|                                                                   |
-|  Patch Module (.ko)          Kernel (vmlinux / modules)           |
-|  +-----------------------+   +------------------------------+     |
-|  | klp_patch             |   |                              |     |
-|  |  +- klp_object[]      |   |  original_func:              |     |
-|  |  |   +- klp_func[]    |   |    call __fentry__   -----+  |     |
-|  |  |   |  .old_name     |   |    <original code>    |   |  |     |
-|  |  |   |  .new_func ----+---+->  patched_func()     |   |  |     |
-|  |  |   +- klp_func[]    |   |                       |   |  |     |
-|  |  +- klp_object[]      |   +------------------------------+     |
-|  +-----------------------+                           |            |
-|                                                      |            |
-|  ftrace layer                                        |            |
-|  +------------------------------------------------+  |            |
-|  | klp_ops                                        |  |            |
-|  |   .fops -> klp_ftrace_handler()               <---+            |
-|  |   .func_stack -> [newest_func | older_func]    |               |
-|  +------------------------------------------------+               |
-|                                                                   |
-|  Per-task transition                                              |
-|  +------------------------------------------------+               |
-|  | task_struct.patch_state                        |               |
-|  |   KLP_TRANSITION_IDLE      = -1                |               |
-|  |   KLP_TRANSITION_UNPATCHED =  0                |               |
-|  |   KLP_TRANSITION_PATCHED   =  1                |               |
-|  | TIF_PATCH_PENDING thread flag                  |               |
-|  +------------------------------------------------+               |
-|                                                                   |
+|                                                                  |
+|  Patch Module (.ko)          Kernel (vmlinux / modules)          |
+|  +-----------------------+   +------------------------------+    |
+|  | klp_patch             |   |                              |    |
+|  |  +- klp_object[]      |   |  original_func:              |    |
+|  |  |   +- klp_func[]    |   |    call __fentry__   -----+  |    |
+|  |  |   |  .old_name     |   |    <original code>    |   |  |    |
+|  |  |   |  .new_func ----+---+->  patched_func()     |   |  |    |
+|  |  |   +- klp_func[]    |   |                       |   |  |    |
+|  |  +- klp_object[]      |   +------------------------------+    |
+|  +-----------------------+                           |           |
+|                                                      |           |
+|  ftrace layer                                        |           |
+|  +------------------------------------------------+  |           |
+|  | klp_ops                                        |  |           |
+|  |   .fops -> klp_ftrace_handler()               <---+           |
+|  |   .func_stack -> [newest_func | older_func]    |              |
+|  +------------------------------------------------+              |
+|                                                                  |
+|  Per-task transition                                             |
+|  +------------------------------------------------+              |
+|  | task_struct.patch_state                        |              |
+|  |   KLP_TRANSITION_IDLE      = -1                |              |
+|  |   KLP_TRANSITION_UNPATCHED =  0                |              |
+|  |   KLP_TRANSITION_PATCHED   =  1                |              |
+|  | TIF_PATCH_PENDING thread flag                  |              |
+|  +------------------------------------------------+              |
+|                                                                  |
 +------------------------------------------------------------------+
 ```
 

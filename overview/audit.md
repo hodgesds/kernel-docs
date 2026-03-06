@@ -293,17 +293,17 @@ Defined in `include/uapi/linux/audit.h:31-52`:
 
 | Range       | Purpose                                    |
 |-------------|--------------------------------------------|
-| 1000 - 1099 | Command/control (bidirectional)             |
-| 1100 - 1199 | User-space trusted application messages     |
-| 1200 - 1299 | Audit daemon internal messages              |
-| 1300 - 1399 | Kernel audit event messages                 |
-| 1400 - 1499 | LSM access control messages (AVC, etc.)     |
-| 1500 - 1599 | Kernel LSPP events                          |
-| 1600 - 1699 | Kernel crypto events                        |
-| 1700 - 1799 | Kernel anomaly records                      |
-| 1800 - 1899 | Kernel integrity events (IMA/EVM)           |
-| 2000        | Generic kernel audit message (legacy)       |
-| 2100 - 2999 | User-space anomaly/response/LSPP/crypto     |
+| 1000 - 1099 | Command/control (bidirectional)            |
+| 1100 - 1199 | User-space trusted application messages    |
+| 1200 - 1299 | Audit daemon internal messages             |
+| 1300 - 1399 | Kernel audit event messages                |
+| 1400 - 1499 | LSM access control messages (AVC, etc.)    |
+| 1500 - 1599 | Kernel LSPP events                         |
+| 1600 - 1699 | Kernel crypto events                       |
+| 1700 - 1799 | Kernel anomaly records                     |
+| 1800 - 1899 | Kernel integrity events (IMA/EVM)          |
+| 2000        | Generic kernel audit message (legacy)      |
+| 2100 - 2999 | User-space anomaly/response/LSPP/crypto    |
 
 ### Key Command Messages (1000-series)
 

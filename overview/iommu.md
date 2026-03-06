@@ -54,15 +54,15 @@ The IOMMU subsystem serves several critical purposes:
                       |
         ┌─────────────┴─────────────┐
         |                           |
-   System Memory              ┌─────────┐
+   System Memory               ┌─────────┐
         ^                      │  IOMMU  │   IOVA -> physical
         |                      └────┬────┘
         |                           |
         |              ┌────────────┴────────────┐
-        |              |            |             |
-        |           ┌──┴──┐    ┌───┴───┐    ┌────┴────┐
-        └───────────│ NIC │    │  GPU  │    │ NVMe    │
-         (DMA)      └─────┘    └───────┘    └─────────┘
+        |              |            |            |
+        |           ┌──┴──┐     ┌───┴───┐   ┌────┴────┐
+        └───────────│ NIC │     │  GPU  │   │ NVMe    │
+         (DMA)      └─────┘     └───────┘   └─────────┘
                      Devices issue DMA using IOVAs;
                      IOMMU translates to physical addresses
 ```
@@ -81,24 +81,24 @@ layer that transparently uses the IOMMU when available.
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Userspace                                    │
-│   VFIO (/dev/vfio)    IOMMUFD (/dev/iommu)    DPDK / SPDK          │
+│   VFIO (/dev/vfio)    IOMMUFD (/dev/iommu)    DPDK / SPDK           │
 ├─────────────────────────────────────────────────────────────────────┤
 │                     Kernel IOMMU Core                               │
 │                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐    │
-│  │  DMA API     │  │  IOMMU API   │  │   IOMMUFD Subsystem    │    │
-│  │  (dma-iommu) │  │  (iommu.c)   │  │   (iommufd/)           │    │
-│  └──────┬───────┘  └──────┬───────┘  └───────────┬────────────┘    │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐     │
+│  │  DMA API     │  │  IOMMU API   │  │   IOMMUFD Subsystem    │     │
+│  │  (dma-iommu) │  │  (iommu.c)   │  │   (iommufd/)           │     │
+│  └──────┬───────┘  └──────┬───────┘  └───────────┬────────────┘     │
 │         └──────────────────┴─────────────────────┘                  │
 │                            │                                        │
-│                   struct iommu_ops                                   │
+│                   struct iommu_ops                                  │
 │                            │                                        │
 ├────────────┬───────────────┼───────────────┬────────────────────────┤
 │            │               │               │                        │
-│  ┌─────────┴──┐  ┌────────┴────┐  ┌───────┴───────┐               │
-│  │ Intel VT-d │  │  AMD-Vi     │  │   ARM SMMU    │   ...         │
-│  │ (intel/)   │  │  (amd/)     │  │   (arm/)      │               │
-│  └────────────┘  └─────────────┘  └───────────────┘               │
+│  ┌─────────┴──┐   ┌────────┴────┐  ┌───────┴───────┐                │
+│  │ Intel VT-d │   │  AMD-Vi     │  │   ARM SMMU    │   ...          │
+│  │ (intel/)   │   │  (amd/)     │  │   (arm/)      │                │
+│  └────────────┘   └─────────────┘  └───────────────┘                │
 ├─────────────────────────────────────────────────────────────────────┤
 │                      IOMMU Hardware                                 │
 └─────────────────────────────────────────────────────────────────────┘
@@ -392,28 +392,28 @@ purpose. The type is encoded as a bitmask of feature flags.
 ┌──────────────────────┬────────────────────────────────────────────────┐
 │ Type                 │ Description                                    │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_BLOCKED │ All DMA blocked; used to isolate devices.     │
-│ (0)                  │ No translations possible.                     │
+│ IOMMU_DOMAIN_BLOCKED │ All DMA blocked; used to isolate devices.      │
+│ (0)                  │ No translations possible.                      │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_IDENTITY│ DMA addresses = physical addresses.           │
-│ (PT)                 │ Passthrough mode, no translation overhead.    │
+│ IOMMU_DOMAIN_IDENTITY│ DMA addresses = physical addresses.            │
+│ (PT)                 │ Passthrough mode, no translation overhead.     │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_        │ User-managed mappings (VFIO, vhost).          │
-│ UNMANAGED (PAGING)   │ Caller controls all map/unmap operations.     │
+│ IOMMU_DOMAIN_        │ User-managed mappings (VFIO, vhost).           │
+│ UNMANAGED (PAGING)   │ Caller controls all map/unmap operations.      │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_DMA     │ Kernel DMA API managed. The IOMMU core       │
-│ (PAGING | DMA_API)   │ handles IOVA allocation and mapping for       │
-│                      │ standard device drivers. Strict TLB flush.    │
+│ IOMMU_DOMAIN_DMA     │ Kernel DMA API managed. The IOMMU core         │
+│ (PAGING | DMA_API)   │ handles IOVA allocation and mapping for        │
+│                      │ standard device drivers. Strict TLB flush.     │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_DMA_FQ  │ Like DMA, but with batched (lazy) TLB        │
-│ (PAGING|DMA_API|FQ)  │ invalidation via a flush queue for            │
-│                      │ higher performance.                           │
+│ IOMMU_DOMAIN_DMA_FQ  │ Like DMA, but with batched (lazy) TLB          │
+│ (PAGING|DMA_API|FQ)  │ invalidation via a flush queue for             │
+│                      │ higher performance.                            │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_SVA     │ Shares process virtual address space with     │
-│                      │ device. Uses CPU page tables via PASID.       │
+│ IOMMU_DOMAIN_SVA     │ Shares process virtual address space with      │
+│                      │ device. Uses CPU page tables via PASID.        │
 ├──────────────────────┼────────────────────────────────────────────────┤
-│ IOMMU_DOMAIN_NESTED  │ Guest-managed stage-1 translation nested on   │
-│                      │ host stage-2. For VM device passthrough.      │
+│ IOMMU_DOMAIN_NESTED  │ Guest-managed stage-1 translation nested on    │
+│                      │ host stage-2. For VM device passthrough.       │
 └──────────────────────┴────────────────────────────────────────────────┘
 ```
 
@@ -654,20 +654,20 @@ a numeric ID returned to userspace. Objects form a reference-counted graph:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    IOMMUFD Object Graph                       │
+│                    IOMMUFD Object Graph                      │
 │                                                              │
-│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐    │
-│   │  IOAS    │────>│   HWPT       │────>│  HWPT        │    │
-│   │ (IO Addr │     │  (HW Page    │     │  (Nested)    │    │
-│   │  Space)  │     │   Table)     │     │              │    │
-│   └──────────┘     └──────────────┘     └──────────────┘    │
+│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐     │
+│   │  IOAS    │────>│   HWPT       │────>│  HWPT        │     │
+│   │ (IO Addr │     │  (HW Page    │     │  (Nested)    │     │
+│   │  Space)  │     │   Table)     │     │              │     │
+│   └──────────┘     └──────────────┘     └──────────────┘     │
 │        │                  │                                  │
 │        v                  v                                  │
-│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐    │
-│   │  DEVICE  │     │   VIOMMU     │────>│  VDEVICE     │    │
-│   │          │     │  (Virtual    │     │              │    │
-│   │          │     │   IOMMU)     │     │              │    │
-│   └──────────┘     └──────────────┘     └──────────────┘    │
+│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐     │
+│   │  DEVICE  │     │   VIOMMU     │────>│  VDEVICE     │     │
+│   │          │     │  (Virtual    │     │              │     │
+│   │          │     │   IOMMU)     │     │              │     │
+│   └──────────┘     └──────────────┘     └──────────────┘     │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```

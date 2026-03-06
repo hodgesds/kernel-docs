@@ -2128,7 +2128,12 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 ### Overview
 
-Memory compaction reduces external fragmentation by scanning a memory zone in two directions: a migration scanner moving upward from the zone start identifies movable pages, and a free-page scanner moving downward from the zone end collects free pages to serve as migration targets. When the two scanners meet, the zone has been fully compacted. The process relies on `migrate_pages()` from `mm/migrate.c` to physically relocate pages.
+Memory compaction reduces external fragmentation by scanning a memory zone in
+two directions: a migration scanner moving upward from the zone start
+identifies movable pages, and a free-page scanner moving downward from the zone
+end collects free pages to serve as migration targets. When the two scanners
+meet, the zone has been fully compacted. The process relies on
+`migrate_pages()` from `mm/migrate.c` to physically relocate pages.
 
 ### Compaction Triggers
 
@@ -2144,11 +2149,16 @@ enum compact_result try_to_compact_pages(gfp_t gfp_mask, unsigned int order,
         enum compact_priority prio, struct page **capture)
 ```
 
-It iterates each zone in the zonelist and calls `compact_zone_order()` → `compact_zone()`.
+It iterates each zone in the zonelist and calls `compact_zone_order()` →
+`compact_zone()`.
 
 **2. kcompactd (Background Compaction)**
 
-One `kcompactd` kernel thread per NUMA node, created via `kcompactd_run()`. It sleeps on `pgdat->kcompactd_wait` and is woken by `wakeup_kcompactd()` when the allocator fails to satisfy a high-order request. The thread function `kcompactd()` calls `kcompactd_do_work()` → `compact_node()` → per-zone `compact_zone()`.
+One `kcompactd` kernel thread per NUMA node, created via `kcompactd_run()`. It
+sleeps on `pgdat->kcompactd_wait` and is woken by `wakeup_kcompactd()` when the
+allocator fails to satisfy a high-order request. The thread function
+`kcompactd()` calls `kcompactd_do_work()` → `compact_node()` → per-zone
+`compact_zone()`.
 
 ```c
 static int kcompactd(void *p)           /* mm/compaction.c */
@@ -2157,7 +2167,14 @@ void wakeup_kcompactd(pg_data_t *pgdat, int order, int highest_zoneidx)
 
 **3. Proactive Compaction**
 
-kcompactd also performs proactive (background) compaction based on a per-node **fragmentation score**. Every `HPAGE_FRAG_CHECK_INTERVAL_MSEC` (500 ms), the kcompactd loop evaluates `should_proactive_compact_node()`. The fragmentation score is the external fragmentation percentage at `COMPACTION_HPAGE_ORDER` (PMD order for THP systems), weighted by zone size. If the score exceeds the high watermark (`100 - sysctl_compaction_proactiveness + 10`), proactive compaction runs until the score drops below the low watermark (`100 - sysctl_compaction_proactiveness`).
+kcompactd also performs proactive (background) compaction based on a per-node
+**fragmentation score**. Every `HPAGE_FRAG_CHECK_INTERVAL_MSEC` (500 ms), the
+kcompactd loop evaluates `should_proactive_compact_node()`. The fragmentation
+score is the external fragmentation percentage at `COMPACTION_HPAGE_ORDER` (PMD
+order for THP systems), weighted by zone size. If the score exceeds the high
+watermark (`100 - sysctl_compaction_proactiveness + 10`), proactive compaction
+runs until the score drops below the low watermark (`100 -
+sysctl_compaction_proactiveness`).
 
 Manual triggers (order == -1, flagged by `is_via_compact_memory()`):
 - Write to `/proc/sys/vm/compact_memory`
@@ -2199,11 +2216,19 @@ struct compact_control {
 
 ### Key Functions
 
-**`compact_zone()`** — Core compaction loop for a single zone. Initializes scanner PFNs from cached positions in `zone->compact_cached_migrate_pfn[]` and `zone->compact_cached_free_pfn`. Loops calling `isolate_migratepages()` and `migrate_pages()` until `compact_finished()` returns non-`COMPACT_CONTINUE`.
+**`compact_zone()`** — Core compaction loop for a single zone. Initializes
+scanner PFNs from cached positions in `zone->compact_cached_migrate_pfn[]` and
+`zone->compact_cached_free_pfn`. Loops calling `isolate_migratepages()` and
+`migrate_pages()` until `compact_finished()` returns non-`COMPACT_CONTINUE`.
 
-**`compaction_suitable()` / `__compaction_suitable()`** — Checks whether compaction is worth running. Verifies that order-0 watermarks are met and checks the fragmentation index (extfrag) to distinguish low-memory failures from fragmentation failures.
+**`compaction_suitable()` / `__compaction_suitable()`** — Checks whether
+compaction is worth running. Verifies that order-0 watermarks are met and
+checks the fragmentation index (extfrag) to distinguish low-memory failures
+from fragmentation failures.
 
-**`isolate_migratepages_block()`** — Scans a single pageblock for movable pages. In `MIGRATE_ASYNC` mode, aborts immediately if too many pages are already isolated.
+**`isolate_migratepages_block()`** — Scans a single pageblock for movable
+pages. In `MIGRATE_ASYNC` mode, aborts immediately if too many pages are
+already isolated.
 
 **`migrate_pages()`** (`mm/migrate.c`):
 
@@ -2225,11 +2250,18 @@ enum migrate_mode {
 };
 ```
 
-Direct compaction at `COMPACT_PRIO_ASYNC` uses `MIGRATE_ASYNC`; all other priorities use `MIGRATE_SYNC_LIGHT`.
+Direct compaction at `COMPACT_PRIO_ASYNC` uses `MIGRATE_ASYNC`; all other
+priorities use `MIGRATE_SYNC_LIGHT`.
 
 ### Interaction with the Buddy Allocator
 
-During compaction, free pages are removed from the buddy allocator's free lists via `isolate_freepages_block()` and placed in `cc->freepages[]`. After migration, unused free pages are returned to the buddy via `release_free_list()` → `__free_pages()`. A **direct capture** optimization (`struct capture_control`) allows a page freed via the buddy's free path to be captured directly into the compaction free list, avoiding round-trips (`current->capture_control`).
+During compaction, free pages are removed from the buddy allocator's free lists
+via `isolate_freepages_block()` and placed in `cc->freepages[]`. After
+migration, unused free pages are returned to the buddy via
+`release_free_list()` → `__free_pages()`. A **direct capture** optimization
+(`struct capture_control`) allows a page freed via the buddy's free path to be
+captured directly into the compaction free list, avoiding round-trips
+(`current->capture_control`).
 
 ### Compaction Deferral
 
@@ -2239,16 +2271,18 @@ To avoid repeatedly running failed compaction, the kernel tracks per-zone state:
 - `zone->compact_defer_shift` — current backoff exponent (max `COMPACT_MAX_DEFER_SHIFT` = 6)
 - `zone->compact_order_failed` — minimum order at which compaction last failed
 
-`compaction_deferred()` returns true if `compact_considered < (1 << compact_defer_shift)`, skipping compaction. On success, `compaction_defer_reset()` resets these fields.
+`compaction_deferred()` returns true if `compact_considered < (1 <<
+compact_defer_shift)`, skipping compaction. On success,
+`compaction_defer_reset()` resets these fields.
 
 ### `/proc/sys/vm/compact_*` Tunables
 
-| Sysctl | Mode | Default | Description |
-|--------|------|---------|-------------|
-| `compact_memory` | write-only | — | Write any value to trigger full memory compaction immediately |
-| `compaction_proactiveness` | 0644 | 20 | Controls aggressiveness of background proactive compaction (0–100); 0 disables |
-| `extfrag_threshold` | 0644 | 500 | Fragmentation score threshold (0–1000) below which compaction is skipped |
-| `compact_unevictable_allowed` | 0644 | CONFIG-dependent | Allow compaction to scan unevictable LRU lists |
+|Sysctl                       |Mode      |Default         |Description
+|-----------------------------|----------|----------------|-----------
+|`compact_memory`             |write-only|—               |Write any value to trigger full memory compaction immediately
+|`compaction_proactiveness`   |0644      |20              |Controls aggressiveness of background proactive compaction (0–100); 0 disables
+|`extfrag_threshold`          |0644      |500             |Fragmentation score threshold (0–1000) below which compaction is skipped
+|`compact_unevictable_allowed`|0644      |CONFIG-dependent|Allow compaction to scan unevictable LRU lists
 
 ---
 
@@ -2307,30 +2341,54 @@ long oom_badness(struct task_struct *p, unsigned long totalpages)
    points += adj;
    ```
 
-`oom_score_adj` ranges from -1000 (`OOM_SCORE_ADJ_MIN`, process is unkillable) to +1000. Setting `oom_score_adj = 1000` adds `totalpages` to the score (equivalent to claiming to use all memory). Tasks with `oom_score_adj == OOM_SCORE_ADJ_MIN`, with `MMF_OOM_SKIP` set, or in the middle of `vfork()` return `LONG_MIN` (excluded). `PF_KTHREAD` and init return `LONG_MIN` via `oom_unkillable_task()`.
+`oom_score_adj` ranges from -1000 (`OOM_SCORE_ADJ_MIN`, process is unkillable)
+to +1000. Setting `oom_score_adj = 1000` adds `totalpages` to the score
+(equivalent to claiming to use all memory). Tasks with `oom_score_adj ==
+OOM_SCORE_ADJ_MIN`, with `MMF_OOM_SKIP` set, or in the middle of `vfork()`
+return `LONG_MIN` (excluded). `PF_KTHREAD` and init return `LONG_MIN` via
+`oom_unkillable_task()`.
 
 ### OOM Reaper
 
-The OOM reaper is a dedicated kernel thread (`oom_reaper_th`) created at boot by `oom_init()`. Its purpose is to asynchronously reclaim the address space of the OOM victim without holding mm locks that might be held by the dying process.
+The OOM reaper is a dedicated kernel thread (`oom_reaper_th`) created at boot
+by `oom_init()`. Its purpose is to asynchronously reclaim the address space of
+the OOM victim without holding mm locks that might be held by the dying
+process.
 
-**Thread function:** `oom_reaper()` — waits on `oom_reaper_wait`, dequeues tasks from `oom_reaper_list` (protected by `oom_reaper_lock` spinlock), and calls `oom_reap_task()`.
+**Thread function:** `oom_reaper()` — waits on `oom_reaper_wait`, dequeues
+tasks from `oom_reaper_list` (protected by `oom_reaper_lock` spinlock), and
+calls `oom_reap_task()`.
 
-**`oom_reap_task()`:** Retries up to `MAX_OOM_REAP_RETRIES` (10) times calling `oom_reap_task_mm()`. Each attempt tries `mmap_read_trylock(mm)` (non-blocking). On success, calls `__oom_reap_task_mm()` which sets `MMF_UNSTABLE` on the mm and calls `unmap_page_range()` for each anonymous or private VMA. Shared file-backed VMAs and `VM_HUGETLB`/`VM_PFNMAP` VMAs are skipped.
+**`oom_reap_task()`:** Retries up to `MAX_OOM_REAP_RETRIES` (10) times calling
+`oom_reap_task_mm()`. Each attempt tries `mmap_read_trylock(mm)`
+(non-blocking). On success, calls `__oom_reap_task_mm()` which sets
+`MMF_UNSTABLE` on the mm and calls `unmap_page_range()` for each anonymous or
+private VMA. Shared file-backed VMAs and `VM_HUGETLB`/`VM_PFNMAP` VMAs are
+skipped.
 
-**Queuing** (`queue_oom_reaper()`): After `mark_oom_victim()`, a timer is set for `OOM_REAPER_DELAY` (2 * HZ = 2 seconds). This gives the victim time to exit naturally before the reaper intervenes.
+**Queuing** (`queue_oom_reaper()`): After `mark_oom_victim()`, a timer is set
+for `OOM_REAPER_DELAY` (2 * HZ = 2 seconds). This gives the victim time to exit
+    naturally before the reaper intervenes.
 
 ### Per-cgroup OOM (memcg OOM)
 
-When `oom_control.memcg != NULL`, the OOM killer operates within a single memory cgroup. `select_bad_process()` uses `mem_cgroup_scan_tasks()` instead of `for_each_process()` to scan only tasks belonging to the memcg.
+When `oom_control.memcg != NULL`, the OOM killer operates within a single
+memory cgroup. `select_bad_process()` uses `mem_cgroup_scan_tasks()` instead of
+`for_each_process()` to scan only tasks belonging to the memcg.
 
-The memcg OOM path enters from `try_charge_memcg()` → `mem_cgroup_oom()` → `mem_cgroup_out_of_memory()` → `out_of_memory()` with `oc.memcg` set.
+The memcg OOM path enters from `try_charge_memcg()` → `mem_cgroup_oom()` →
+`mem_cgroup_out_of_memory()` → `out_of_memory()` with `oc.memcg` set.
 
-**Group kill (`memory.oom.group`):** `mem_cgroup_get_oom_group()` traverses ancestors of the victim's memcg looking for any with `oom_group = true`. If found, all tasks in that cgroup are killed via `mem_cgroup_kill_processes()`.
+**Group kill (`memory.oom.group`):** `mem_cgroup_get_oom_group()` traverses
+ancestors of the victim's memcg looking for any with `oom_group = true`. If
+found, all tasks in that cgroup are killed via `mem_cgroup_kill_processes()`.
 
 ### /proc Interfaces
 
-- `/proc/pid/oom_score` — read-only; computed by `oom_badness(task, totalpages)` scaled to 0–2000
-- `/proc/pid/oom_score_adj` — read/write (range -1000 to 1000); stored in `task->signal->oom_score_adj`; writes serialized by `oom_adj_mutex`
+- `/proc/pid/oom_score` — read-only; computed by `oom_badness(task,
+  totalpages)` scaled to 0–2000
+- `/proc/pid/oom_score_adj` — read/write (range -1000 to 1000); stored in
+  `task->signal->oom_score_adj`; writes serialized by `oom_adj_mutex`
 
 ---
 
@@ -2340,7 +2398,11 @@ The memcg OOM path enters from `try_charge_memcg()` → `mem_cgroup_oom()` → `
 
 ### Overview
 
-vmalloc provides virtually contiguous kernel memory backed by physically discontiguous pages. All vmalloc allocations reside in the `[VMALLOC_START, VMALLOC_END)` virtual address range. Virtual address regions are tracked in a red-black tree of `struct vmap_area`, with each allocation additionally described by a `struct vm_struct`.
+vmalloc provides virtually contiguous kernel memory backed by physically
+discontiguous pages. All vmalloc allocations reside in the `[VMALLOC_START,
+VMALLOC_END)` virtual address range. Virtual address regions are tracked in a
+red-black tree of `struct vmap_area`, with each allocation additionally
+described by a `struct vm_struct`.
 
 ### struct vm_struct
 
@@ -2384,7 +2446,9 @@ struct vmap_area {
 };
 ```
 
-Two separate RB trees exist: `free_vmap_area_root` (free regions, augmented with `subtree_max_size` for O(log n) gap search) and `vmap_area_root` (allocated regions).
+Two separate RB trees exist: `free_vmap_area_root` (free regions, augmented
+with `subtree_max_size` for O(log n) gap search) and `vmap_area_root`
+(allocated regions).
 
 ### __vmalloc_node_range() Internals
 
@@ -2403,7 +2467,11 @@ void *__vmalloc_node_range_noprof(unsigned long size, unsigned long align,
 
 ### Lazy TLB Flushing
 
-vmalloc uses **lazy TLB flushing** to amortize the cost of TLB shootdowns. When a vmalloc region is freed, its mappings are not immediately invalidated — they are added to a purge list. `vm_unmap_aliases()` forces a global flush. This is required by callers that need stable direct-map access to pages that may have been vmap'd.
+vmalloc uses **lazy TLB flushing** to amortize the cost of TLB shootdowns. When
+a vmalloc region is freed, its mappings are not immediately invalidated — they
+are added to a purge list. `vm_unmap_aliases()` forces a global flush. This is
+required by callers that need stable direct-map access to pages that may have
+been vmap'd.
 
 ### vmalloc vs vmap vs ioremap
 
@@ -2494,7 +2562,10 @@ int __mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
 void __mem_cgroup_uncharge(struct folio *folio)
 ```
 
-Calls `uncharge_folio()` which extracts the memcg from `folio->memcg_data`, updates the uncharge gather struct, clears `folio->memcg_data`, and releases the css reference. `uncharge_batch()` calls `page_counter_uncharge()` in one shot.
+Calls `uncharge_folio()` which extracts the memcg from `folio->memcg_data`,
+updates the uncharge gather struct, clears `folio->memcg_data`, and releases
+the css reference. `uncharge_batch()` calls `page_counter_uncharge()` in one
+shot.
 
 ### Per-memcg LRU Lists
 

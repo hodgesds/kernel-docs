@@ -551,7 +551,8 @@ int irq_set_affinity(unsigned int irq, const struct cpumask *cpumask);
 int irq_force_affinity(unsigned int irq, const struct cpumask *cpumask);
 ```
 
-`irq_do_set_affinity()` (`kernel/irq/manage.c:223`) calls `chip->irq_set_affinity()` and updates `desc->irq_common_data.affinity`.
+`irq_do_set_affinity()` (`kernel/irq/manage.c:223`) calls
+`chip->irq_set_affinity()` and updates `desc->irq_common_data.affinity`.
 
 ### Managed Interrupts (`IRQD_AFFINITY_MANAGED`)
 

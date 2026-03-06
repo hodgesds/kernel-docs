@@ -183,7 +183,8 @@ Each `struct ipc_namespace` holds:
 - Per-namespace limits (semaphore counts, msg queue sizes, shm limits)
 - `mq_mnt` — mqueuefs mount for POSIX MQ
 
-Created with `CLONE_NEWIPC` in `copy_ipcs()`. Teardown via `free_ipc_work` destroys all objects after RCU grace period.
+Created with `CLONE_NEWIPC` in `copy_ipcs()`. Teardown via `free_ipc_work`
+destroys all objects after RCU grace period.
 
 ---
 
@@ -193,7 +194,8 @@ Created with `CLONE_NEWIPC` in `copy_ipcs()`. Teardown via `free_ipc_work` destr
 
 `ipc/mqueue.c`
 
-Implemented as a pseudo-filesystem (`mqueuefs`). Each queue is a file in the namespace's `mq_mnt`, accessible at `/dev/mqueue`.
+Implemented as a pseudo-filesystem (`mqueuefs`). Each queue is a file in the
+namespace's `mq_mnt`, accessible at `/dev/mqueue`.
 
 #### `struct mqueue_inode_info` (line 134)
 

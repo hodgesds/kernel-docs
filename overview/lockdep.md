@@ -48,8 +48,8 @@ cause any deadlock at this point.
                                    |
                                    v
          +--------------------------------------------------+
-         |               lock_acquire() / lock_release()     |
-         |           (kernel/locking/lockdep.c:5814,5856)    |
+         |               lock_acquire() / lock_release()    |
+         |           (kernel/locking/lockdep.c:5814,5856)   |
          +--------------------------------------------------+
                     |                          |
                     v                          v

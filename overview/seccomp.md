@@ -32,7 +32,7 @@ attack surface available to potentially compromised processes.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Seccomp Overview                              │
+│                    Seccomp Overview                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  User Space                                                     │
@@ -44,7 +44,7 @@ attack surface available to potentially compromised processes.
 │  │    │     - or -                                          │   │
 │  │    │     seccomp(SECCOMP_SET_MODE_FILTER, flags, &fp)    │   │
 │  │    │                                                     │   │
-│  │    │  2. Make syscall (e.g., open())                      │   │
+│  │    │  2. Make syscall (e.g., open())                     │   │
 │  │    ▼                                                     │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │         │                                                       │
@@ -289,7 +289,7 @@ TOCTOU attacks.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                struct seccomp_data layout                    │
+│                struct seccomp_data layout                   │
 ├──────────┬──────┬───────────────────────────────────────────┤
 │ Offset   │ Size │ Field                                     │
 ├──────────┼──────┼───────────────────────────────────────────┤
@@ -735,28 +735,28 @@ Combined with `no_new_privs`, this means:
 │                                                             │
 │  Parent Process                                             │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  seccomp.filter → [F2] → [F1] → NULL               │    │
+│  │  seccomp.filter → [F2] → [F1] → NULL                │    │
 │  └────────┬────────────────────────────────────────────┘    │
 │           │ fork()                                          │
 │           ▼                                                 │
 │  Child Process                                              │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  seccomp.filter → [F2] → [F1] → NULL               │    │
-│  │                    ↑ shared (refcount incremented)   │    │
+│  │  seccomp.filter → [F2] → [F1] → NULL                │    │
+│  │                    ↑ shared (refcount incremented)  │    │
 │  └────────┬────────────────────────────────────────────┘    │
 │           │ seccomp(SET_MODE_FILTER, 0, &new_filter)        │
 │           ▼                                                 │
 │  Child (after new filter)                                   │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  seccomp.filter → [F3] → [F2] → [F1] → NULL        │    │
-│  │                           ↑ still shared with parent │    │
+│  │  seccomp.filter → [F3] → [F2] → [F1] → NULL         │    │
+│  │                           ↑ still shared with parent│    │
 │  └────────┬────────────────────────────────────────────┘    │
 │           │ exec()                                          │
 │           ▼                                                 │
 │  Child (after exec)                                         │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  seccomp.filter → [F3] → [F2] → [F1] → NULL        │    │
-│  │  (filters persist — no escape via exec)              │    │
+│  │  seccomp.filter → [F3] → [F2] → [F1] → NULL         │    │
+│  │  (filters persist — no escape via exec)             │    │
 │  └─────────────────────────────────────────────────────┘    │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -839,47 +839,47 @@ static const struct file_operations seccomp_notify_ops = {
 ### Notification Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                 User Notification Flow                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Sandboxed Process              Supervisor Process              │
-│  ─────────────────              ────────────────────            │
-│                                                                 │
-│  1. syscall() ──────────────►                                   │
-│                                                                 │
-│  2. Filter returns                                              │
-│     SECCOMP_RET_USER_NOTIF                                      │
-│                                                                 │
-│  3. seccomp_do_user_notification()                              │
-│     - creates seccomp_knotif                                    │
-│     - adds to notifications list                                │
-│     - wake_up_poll(wqh)         4. poll()/epoll() wakes up      │
-│     - wait_for_completion()  ◄─────                             │
-│       (TASK_INTERRUPTIBLE)                                      │
-│                                 5. ioctl(SECCOMP_IOCTL_NOTIF_RECV)
-│                                    - reads seccomp_notif:       │
-│                                      { id, pid, data }         │
-│                                    - state: INIT → SENT         │
-│                                                                 │
-│                                 6. Supervisor examines syscall, │
-│                                    performs action on behalf     │
-│                                    of sandboxed process.        │
-│                                                                 │
-│                                 7. [Optional] ioctl(NOTIF_ADDFD)│
-│                                    - inject fd into target      │
-│                                                                 │
-│                                 8. ioctl(SECCOMP_IOCTL_NOTIF_SEND)
-│                                    - sends seccomp_notif_resp:  │
-│                                      { id, val, error, flags }  │
-│                                    - state: SENT → REPLIED      │
-│                                                                 │
-│  9. complete(&knotif->ready) ◄─────                             │
-│     Thread wakes up, uses                                       │
-│     reply values as syscall                                     │
-│     return.                                                     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                 User Notification Flow                            │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  Sandboxed Process              Supervisor Process                │
+│  ─────────────────              ────────────────────              │
+│                                                                   │
+│  1. syscall() ──────────────►                                     │
+│                                                                   │
+│  2. Filter returns                                                │
+│     SECCOMP_RET_USER_NOTIF                                        │
+│                                                                   │
+│  3. seccomp_do_user_notification()                                │
+│     - creates seccomp_knotif                                      │
+│     - adds to notifications list                                  │
+│     - wake_up_poll(wqh)         4. poll()/epoll() wakes up        │
+│     - wait_for_completion()  ◄─────                               │
+│       (TASK_INTERRUPTIBLE)                                        │
+│                                 5. ioctl(SECCOMP_IOCTL_NOTIF_RECV)│
+│                                    - reads seccomp_notif:         │
+│                                      { id, pid, data }            │
+│                                    - state: INIT → SENT           │
+│                                                                   │
+│                                 6. Supervisor examines syscall,   │
+│                                    performs action on behalf      │
+│                                    of sandboxed process.          │
+│                                                                   │
+│                                 7. [Optional] ioctl(NOTIF_ADDFD)  │
+│                                    - inject fd into target        │
+│                                                                   │
+│                                 8. ioctl(SECCOMP_IOCTL_NOTIF_SEND)│
+│                                    - sends seccomp_notif_resp:    │
+│                                      { id, val, error, flags }    │
+│                                    - state: SENT → REPLIED        │
+│                                                                   │
+│  9. complete(&knotif->ready) ◄─────                               │
+│     Thread wakes up, uses                                         │
+│     reply values as syscall                                       │
+│     return.                                                       │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### ioctl Commands
@@ -1082,14 +1082,14 @@ since it already incorporates the constraints of all ancestor filters.
 │    │    └─ test_bit(syscall_nr, cache->allow_native)        │
 │    │         │                                              │
 │    │         ├─ HIT (bit set):                              │
-│    │         │    return SECCOMP_RET_ALLOW immediately       │
-│    │         │    (no BPF programs run)                      │
+│    │         │    return SECCOMP_RET_ALLOW immediately      │
+│    │         │    (no BPF programs run)                     │
 │    │         │                                              │
 │    │         └─ MISS (bit clear):                           │
 │    │              fall through to BPF evaluation            │
 │    │                                                        │
 │    └─ for each filter f:                                    │
-│         bpf_prog_run_pin_on_cpu(f->prog, sd)               │
+│         bpf_prog_run_pin_on_cpu(f->prog, sd)                │
 │         keep most restrictive result                        │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
