@@ -89,7 +89,7 @@ either the old or new version of data, never a partially updated state.
 │     Period during which all pre-existing readers complete   │
 │     After grace period: safe to free old data               │
 │                                                             │
-│     Time ─────────────────────────────────────────▶         │
+│     Time ─────────────────────────────────────────▶        │
 │     │                                                       │
 │     │ [Reader A starts]                                     │
 │     │      │                                                │
