@@ -27,12 +27,14 @@ Extended documentation for various Linux kernel subsystems and APIs. These docs 
 | [Live Patching](overview/livepatch.md) | Runtime function replacement via ftrace, consistency model |
 | [Lockdep](overview/lockdep.md) | Lock dependency validator, deadlock detection, and IRQ state tracking |
 | [Locking & Synchronization](overview/locking.md) | Spinlocks, mutexes, RW locks, and synchronization primitives |
+| [Memory Barriers](overview/memory_barriers.md) | Memory ordering, architecture models (x86/ARM64/RISC-V/PowerPC), LKMM, and barrier APIs |
 | [Memory Management](overview/memory_management.md) | Page allocator, slab, vmalloc, page tables, and virtual memory |
 | [Module Loading](overview/modules.md) | Module lifecycle, ELF parsing, symbol resolution, and signing |
 | [Namespaces](overview/namespaces.md) | 8 namespace types, nsproxy, and container isolation primitives |
 | [Netfilter](overview/netfilter.md) | Netfilter hooks, nf_tables, connection tracking, and NAT |
 | [Networking](overview/networking.md) | Network stack, sk_buff, sockets, and protocol handling |
 | [Perf Events](overview/perf_event.md) | Performance counters, hardware/software events, and profiling |
+| [Permissions & Credentials](overview/permissions.md) | UIDs, capabilities, struct cred, and privilege checks |
 | [Power Management](overview/power_management.md) | Suspend/resume, runtime PM, and power domains |
 | [printk / Logging](overview/printk.md) | Lockless ring buffer, console drivers, and dynamic debug |
 | [Process Lifecycle](overview/process_lifecycle.md) | Process creation, scheduling states, and termination |
