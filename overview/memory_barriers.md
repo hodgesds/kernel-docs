@@ -72,17 +72,17 @@ categories of reordering:
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  Store-Store reordering:  W→W   (Store A then Store B)           │
-│    CPU writes A and B out of order to different cache lines       │
+│    CPU writes A and B out of order to different cache lines      │
 │                                                                  │
 │  Load-Load reordering:    R→R   (Load A then Load B)             │
-│    CPU issues reads out of order or from different buffers        │
+│    CPU issues reads out of order or from different buffers       │
 │                                                                  │
 │  Load-Store reordering:   R→W   (Load A then Store B)            │
-│    CPU retires a store before a prior load completes              │
+│    CPU retires a store before a prior load completes             │
 │                                                                  │
 │  Store-Load reordering:   W→R   (Store A then Load B)            │
-│    CPU reads B before the store to A is visible to others         │
-│    (caused by store buffers; the hardest to prevent)              │
+│    CPU reads B before the store to A is visible to others        │
+│    (caused by store buffers; the hardest to prevent)             │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -334,15 +334,15 @@ ordered memory model similar to ARM64:
 │  Strongest ◄─────────────────────────────────────────► Weakest        │
 │                                                                       │
 │  x86 (TSO)          ARM64          RISC-V (RVWMO)     PowerPC         │
-│  ▲                  ▲              ▲                   ▲               │
-│  │                  │              │                   │               │
-│  Only W→R           All four       All four            All four        │
-│  reordering         reorderings    reorderings         reorderings     │
-│                                                        + IRIW          │
+│  ▲                  ▲              ▲                   ▲              │
+│  │                  │              │                   │              │
+│  Only W→R           All four       All four            All four       │
+│  reordering         reorderings    reorderings         reorderings    │
+│                                                        + IRIW         │
 │                                                                       │
-│  Most barriers      All barriers   All barriers        All barriers    │
-│  are NOPs           emit real      emit real            emit real      │
-│                     instructions   instructions        instructions    │
+│  Most barriers      All barriers   All barriers        All barriers   │
+│  are NOPs           emit real      emit real            emit real     │
+│                     instructions   instructions        instructions   │
 │                                                                       │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -622,7 +622,7 @@ if (val) {
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│              Dependency Ordering Summary                          │
+│              Dependency Ordering Summary                         │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  Dependency Type    │ Orders Load→Load? │ Orders Load→Store?     │
@@ -802,7 +802,7 @@ if (desc->status & DESC_COMPLETE) {
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│              I/O Barrier Selection                                │
+│              I/O Barrier Selection                               │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  Ordering between...              Use...                         │
@@ -814,10 +814,10 @@ if (desc->status & DESC_COMPLETE) {
 │  MMIO ↔ DMA                       mb() or mmiowb()               │
 │                                                                  │
 │  mmiowb():                                                       │
-│  Orders MMIO writes before a spinlock unlock. Prevents            │
-│  out-of-order MMIO writes from being observed by another          │
-│  CPU that subsequently takes the same spinlock. Internally        │
-│  folded into spin_unlock() on architectures that need it.         │
+│  Orders MMIO writes before a spinlock unlock. Prevents           │
+│  out-of-order MMIO writes from being observed by another         │
+│  CPU that subsequently takes the same spinlock. Internally       │
+│  folded into spin_unlock() on architectures that need it.        │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -1028,10 +1028,10 @@ Understanding these prevents adding redundant barriers:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│              Implicit Barriers in Kernel Primitives               │
+│              Implicit Barriers in Kernel Primitives              │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Primitive                    Implicit Barrier                    │
+│  Primitive                    Implicit Barrier                   │
 │  ────────────────────────     ─────────────────────────────────  │
 │  spin_lock()                  ACQUIRE (one-way: ops after lock   │
 │                               cannot move before it)             │
@@ -1060,7 +1060,7 @@ Understanding these prevents adding redundant barriers:
 │  wait_for_completion()        spin_lock/unlock + schedule        │
 │                                                                  │
 │  atomic_add_return() etc.     Full mb() before and after         │
-│  cmpxchg(), xchg()           Full mb() before and after         │
+│  cmpxchg(), xchg()           Full mb() before and after          │
 │                                                                  │
 │  smp_store_release()         All prior ops ordered before store  │
 │  smp_load_acquire()          All later ops ordered after load    │
@@ -1069,7 +1069,7 @@ Understanding these prevents adding redundant barriers:
 │  rcu_dereference()           READ_ONCE + address dependency      │
 │  synchronize_rcu()           Full ordering (grace period)        │
 │                                                                  │
-│  I/O accessors (readl, etc.) Ordered w.r.t each other and       │
+│  I/O accessors (readl, etc.) Ordered w.r.t each other and        │
 │                               prior/subsequent memory accesses   │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
